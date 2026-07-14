@@ -8,6 +8,7 @@ import {
 } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { getSessionRouting } from './db/session-routing.js';
 import {
   clearContinuation,
   clearCurrentInReplyTo,
@@ -797,6 +798,19 @@ function resolveDestinationThread(
     if (row) return { threadId: row.thread_id, inReplyTo: row.id };
   } catch (err) {
     log(`resolveDestinationThread error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // telegram-topic-support: no matching inbound row (e.g. a task/system session,
+  // which never received a real message from this channel). Fall back to the
+  // session's default routing — the host stamps it with the task's origin topic —
+  // but only when it points at this same channel+platform, so we never stamp one
+  // channel's thread onto another.
+  try {
+    const sr = getSessionRouting();
+    if (sr.channel_type === channelType && sr.platform_id === platformId && sr.thread_id) {
+      return { threadId: sr.thread_id, inReplyTo: null };
+    }
+  } catch {
+    // session_routing may be absent on older session DBs — ignore.
   }
   return null;
 }

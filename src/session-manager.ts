@@ -20,6 +20,7 @@ import type { OutboundFile } from './channels/adapter.js';
 import { DATA_DIR } from './config.js';
 import { ensureContainedInboxDir, isPathInside } from './inbox-safety.js';
 import { getMessagingGroup } from './db/messaging-groups.js';
+import { resolveTaskThreadRouting } from './task-origin-routing.js';
 import {
   createSession,
   findSystemSession,
@@ -179,11 +180,22 @@ export function writeSessionRouting(agentGroupId: string, sessionId: string): vo
 
   let channelType: string | null = null;
   let platformId: string | null = null;
+  let threadId: string | null = session.thread_id;
   if (session.messaging_group_id) {
     const mg = getMessagingGroup(session.messaging_group_id);
     if (mg) {
       channelType = mg.channel_type;
       platformId = mg.platform_id;
+    }
+  } else {
+    // telegram-topic-support skill: recover the origin topic for a task/system
+    // session so scheduled tasks report back into the channel + thread they were
+    // created from instead of collapsing to Telegram "General".
+    const taskRouting = resolveTaskThreadRouting(agentGroupId, sessionId, session.thread_id);
+    if (taskRouting) {
+      channelType = taskRouting.channelType;
+      platformId = taskRouting.platformId;
+      threadId = taskRouting.threadId;
     }
   }
 
@@ -192,12 +204,12 @@ export function writeSessionRouting(agentGroupId: string, sessionId: string): vo
     upsertSessionRouting(db, {
       channel_type: channelType,
       platform_id: platformId,
-      thread_id: session.thread_id,
+      thread_id: threadId,
     });
   } finally {
     db.close();
   }
-  log.debug('Session routing written', { sessionId, channelType, platformId, threadId: session.thread_id });
+  log.debug('Session routing written', { sessionId, channelType, platformId, threadId });
 }
 
 /**
