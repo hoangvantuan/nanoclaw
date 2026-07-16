@@ -5,7 +5,7 @@ sessions fall back to the upstream behaviour (null routing → base chat).
 
 1. **Delete the skill-owned files:**
    ```bash
-   rm -f src/task-origin-routing.ts src/telegram-topic-support.test.ts
+   rm -f src/task-origin-routing.ts src/telegram-topic-support.test.ts src/telegram-topic-defaults.test.ts
    ```
 
 2. **Revert `src/session-manager.ts`:**
@@ -33,6 +33,7 @@ sessions fall back to the upstream behaviour (null routing → base chat).
 
 4. **Revert `src/channels/telegram.ts`** (if Telegram installed):
    - Set `supportsThreads: false` back.
+   - Set `TELEGRAM_DEFAULTS.group.threads` back to `false`.
 
 5. **Rebuild:**
    ```bash

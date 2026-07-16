@@ -17,13 +17,12 @@ import type { ChannelAdapter, ChannelDefaults, ChannelSetup, InboundMessage } fr
 import { tryConsume } from './telegram-pairing.js';
 
 /**
- * Dedicated bot identity, non-threaded platform (supportsThreads:false), so
- * group engagement can never be sticky-per-thread — 'mention' keeps a group
- * wiring from staying engaged forever in the single shared session.
+ * Telegram forum topics are real threads. DMs still collapse to one session,
+ * while group wirings preserve topic ids by default and can explicitly opt out.
  */
 const TELEGRAM_DEFAULTS: ChannelDefaults = {
   dm: { engageMode: 'pattern', engagePattern: '.', threads: false, unknownSenderPolicy: 'request_approval' },
-  group: { engageMode: 'mention', threads: false, unknownSenderPolicy: 'request_approval' },
+  group: { engageMode: 'mention', threads: true, unknownSenderPolicy: 'request_approval' },
   mentions: 'platform',
 };
 
@@ -224,9 +223,9 @@ registerChannelAdapter('telegram', {
       extractReplyContext,
       // telegram-topic-support skill: Telegram forum topics ARE real threads
       // (@chat-adapter/telegram >=4.29 encodes message_thread_id into thread.id).
-      // Enabled so the router can preserve a topic's thread id; non-forum groups
-      // and DMs inherit the threads:false per-wiring default and collapse to the
-      // base chat. Upstream ships false — re-apply after /update-skills.
+      // Enabled so the router can preserve a topic's thread id. Group wirings
+      // inherit threads:true; DMs still collapse to the base chat. Upstream
+      // ships false — re-apply after /update-skills.
       // See .claude/skills/telegram-topic-support.
       supportsThreads: true,
       defaults: TELEGRAM_DEFAULTS,

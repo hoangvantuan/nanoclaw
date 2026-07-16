@@ -9,10 +9,9 @@ Two behaviours combined:
 
 1. **Enable threads on the Telegram adapter.** Chat SDK `@chat-adapter/telegram >= 4.29`
    encodes `message_thread_id` into `thread.id` and re-emits it on send, so a
-   forum topic *is* a real thread. Flip the adapter capability so the router can
-   preserve a topic's thread id. Non-forum groups and DMs inherit the
-   `threads:false` per-wiring default and collapse to the base chat exactly as
-   before.
+   forum topic *is* a real thread. Flip the adapter capability and set Telegram
+   group defaults to `threads:true`, so newly approved group wirings preserve
+   topic ids automatically. DMs remain `threads:false`.
 
 2. **Route task/system sessions back to their origin topic.** A task/system
    session owns no messaging group, so core writes null routing and any
@@ -42,6 +41,7 @@ Safe to re-run — every step checks for its own marker before editing.
 ```bash
 cp .claude/skills/telegram-topic-support/src/task-origin-routing.ts src/task-origin-routing.ts
 cp .claude/skills/telegram-topic-support/src/telegram-topic-support.test.ts src/telegram-topic-support.test.ts
+cp .claude/skills/telegram-topic-support/src/telegram-topic-defaults.test.ts src/telegram-topic-defaults.test.ts
 ```
 
 ### 2. Reach-in — host session routing producer (`src/session-manager.ts`)
@@ -116,24 +116,35 @@ task's origin topic):
 
 ### 4. Reach-in — Telegram adapter capability (`src/channels/telegram.ts`)
 
-Only if Telegram is installed. In the `registerChannelAdapter('telegram', { ... })`
-call, set `supportsThreads: true` (upstream ships `false`):
+Only if Telegram is installed. Make both changes:
 
 ```ts
 supportsThreads: true,
 ```
 
+In `TELEGRAM_DEFAULTS`, preserve group topics by default while keeping DMs
+collapsed:
+
+```ts
+dm: { engageMode: 'pattern', engagePattern: '.', threads: false, unknownSenderPolicy: 'request_approval' },
+group: { engageMode: 'mention', threads: true, unknownSenderPolicy: 'request_approval' },
+```
+
+Existing Telegram group wirings with `threads=NULL` immediately inherit the new
+default. Existing shared sessions may still contain thread-stripped history;
+delete those sessions after stopping the service so the next topic message
+creates a clean per-thread session.
+
 ### 5. Build + verify
 
 ```bash
 pnpm run build
-pnpm test -- telegram-topic-support
+pnpm exec vitest run src/telegram-topic-support.test.ts src/telegram-topic-defaults.test.ts
 pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit
 ```
 
-`pnpm test -- telegram-topic-support` drives the real `writeSessionRouting` and
-goes red if reach-in #2 is deleted or drifts. The container typecheck guards
-reach-in #3 against drift (moved imports / renamed fields).
+The two focused tests guard task-origin routing and Telegram's group/DM thread
+defaults. The container typecheck guards reach-in #3 against drift.
 
 ## Recipe
 
@@ -144,8 +155,9 @@ Telegram adapter.
 ## Troubleshooting
 
 - **Tasks still land in "General".** Confirm reach-in #4 (`supportsThreads: true`)
-  survived — `/update-skills` re-copies the Telegram adapter from the `channels`
-  branch and reverts it. Re-run this skill.
+  and `TELEGRAM_DEFAULTS.group.threads: true` survived — `/update-skills`
+  re-copies the Telegram adapter from the `channels` branch and reverts them.
+  Re-run this skill.
 - **`resolveTaskThreadRouting` import fails to resolve.** Step 1 wasn't run; copy
   `src/task-origin-routing.ts` in.
 - **Task session has no origin (CLI-created task).** Expected — routing stays
