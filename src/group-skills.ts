@@ -44,7 +44,12 @@ export function materializeTemplateSkills(agentGroupId: string, destSkillsDir: s
 
   fs.mkdirSync(destSkillsDir, { recursive: true });
   for (const name of fs.readdirSync(src)) {
-    if (!fs.statSync(path.join(src, name)).isDirectory()) continue;
+    // lstat, not stat: the source dir also holds Claude-plane shared-skill
+    // symlinks that point at container paths (/app/skills/*), dangling on the
+    // host. Only REAL template-skill dirs should be mirrored; a symlink (broken
+    // or not) is skipped rather than followed — statSync would throw on the
+    // dangling ones and abort the spawn.
+    if (!fs.lstatSync(path.join(src, name)).isDirectory()) continue;
     const dest = path.join(destSkillsDir, name);
     fs.rmSync(dest, { recursive: true, force: true });
     fs.cpSync(path.join(src, name), dest, { recursive: true });
