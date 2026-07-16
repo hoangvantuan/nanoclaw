@@ -224,9 +224,10 @@ registerChannelAdapter('telegram', {
       extractReplyContext,
       // telegram-topic-support skill: Telegram forum topics ARE real threads
       // (@chat-adapter/telegram >=4.29 encodes message_thread_id into thread.id).
-      // Enabled so the router can preserve a topic's thread id; per-wiring
-      // `threads` (NULL inherits the false default) decides which wirings isolate
-      // topics. Re-apply after /update-skills. See .claude/skills/telegram-topic-support.
+      // Enabled so the router can preserve a topic's thread id; non-forum groups
+      // and DMs inherit the threads:false per-wiring default and collapse to the
+      // base chat. Upstream ships false — re-apply after /update-skills.
+      // See .claude/skills/telegram-topic-support.
       supportsThreads: true,
       defaults: TELEGRAM_DEFAULTS,
       transformOutboundText: sanitizeTelegramLegacyMarkdown,
