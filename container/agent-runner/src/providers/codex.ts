@@ -11,6 +11,7 @@ import type {
   ProviderOptions,
   QueryInput,
 } from './types.js';
+import { memoryContextForSessionStart, type MemorySessionHookRegistration } from '../memory/session-hook.js';
 import { archiveProviderExchange } from './exchange-archive.js';
 import {
   type AppServer,
@@ -74,9 +75,18 @@ function normalizeEffort(effort: string | undefined): CodexReasoningEffort | und
 
 export class CodexProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = false;
-  // Codex has no native NanoClaw memory — opt in to the runner's persistent
-  // memory/ scaffold (see memory-scaffold.ts).
-  readonly usesMemoryScaffold = true;
+
+  // Codex has no Claude-style SessionStart hook: the app-server keeps history
+  // server-side and there is no per-turn context reset to fire a hook command
+  // on. Shared memory is injected once, into the thread's base instructions
+  // when a fresh thread is created (see gen() below). Registration just stores
+  // the hook so query() can render the same memory section the hook would.
+  private memorySessionHook?: MemorySessionHookRegistration;
+
+  registerMemorySessionHook(hook: MemorySessionHookRegistration): void {
+    this.memorySessionHook = hook;
+  }
+
   // The app-server keeps history server-side; there is no on-disk transcript,
   // so the provider persists each exchange itself into `conversations/`
   // (see exchange-archive.ts). The poll-loop reports exchanges through this
@@ -148,10 +158,21 @@ export class CodexProvider implements AgentProvider {
 
       try {
         await self.runtime.initializeCodexAppServer(server);
+        // Inject shared memory into a fresh thread's base instructions. Codex
+        // keeps history server-side, so unlike Claude (whose SessionStart hook
+        // re-fires on every context reset) we bootstrap memory once, when the
+        // thread is created. Resumed threads already carry it.
+        const isNewThread = !threadId;
+        const memorySection =
+          isNewThread && self.memorySessionHook ? memoryContextForSessionStart('startup') : undefined;
+        const baseInstructions =
+          [input.systemContext?.instructions, memorySection]
+            .filter((part): part is string => Boolean(part && part.trim()))
+            .join('\n\n') || undefined;
         threadId = await self.runtime.startOrResumeCodexThread(server, threadId, {
           model: self.model,
           cwd: input.cwd,
-          baseInstructions: input.systemContext?.instructions,
+          baseInstructions,
         });
         activeThreadId = threadId;
 

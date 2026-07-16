@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import {
   getPendingMessages,
@@ -556,6 +559,8 @@ export async function processQuery(
             if (!willRetryWrapping && !willRetryTaskBlocks) archivePrompts.shift();
           }
         } else archivePrompts.shift();
+      } else if (event.type === 'file') {
+        deliverProviderFile(event.path, routing);
       }
     }
   } catch (err) {
@@ -603,7 +608,38 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
     case 'progress':
       log(`Progress: ${event.message}`);
       break;
+    case 'file':
+      log(`File: ${event.path}`);
+      break;
   }
+}
+
+/**
+ * Deliver a file the provider produced (e.g. a Codex-generated image) to the
+ * channel the current batch arrived on. Mirrors the send_file MCP tool: copy
+ * into the per-message outbox dir, then write an outbound chat row referencing
+ * the filename. Best-effort — a missing file is logged and skipped, never fatal.
+ */
+function deliverProviderFile(filePath: string, routing: RoutingContext): void {
+  if (!fs.existsSync(filePath)) {
+    log(`Provider file event skipped — not found: ${filePath}`);
+    return;
+  }
+  const id = generateId();
+  const filename = path.basename(filePath);
+  const outboxDir = path.join('/workspace/outbox', id);
+  fs.mkdirSync(outboxDir, { recursive: true });
+  fs.copyFileSync(filePath, path.join(outboxDir, filename));
+  writeMessageOut({
+    id,
+    in_reply_to: routing.inReplyTo,
+    kind: 'chat',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({ text: '', files: [filename] }),
+  });
+  log(`Provider file delivered: ${id} (${filename})`);
 }
 
 /**

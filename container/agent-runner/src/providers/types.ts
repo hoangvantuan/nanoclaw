@@ -136,4 +136,12 @@ export type ProviderEvent =
    * event (tool call, thinking, partial message, anything) so the
    * poll-loop's idle timer stays honest during long tool runs.
    */
-  | { type: 'activity' };
+  | { type: 'activity' }
+  /**
+   * A file the provider produced that the runner must deliver itself. Used by
+   * providers whose native client renders generated files locally (e.g.
+   * Codex's server-side image generation) so the model believes delivery
+   * already happened and never send_files them. The poll-loop copies the file
+   * into the outbox and sends it to the batch's channel.
+   */
+  | { type: 'file'; path: string };
