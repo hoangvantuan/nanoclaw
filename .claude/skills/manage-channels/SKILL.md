@@ -96,6 +96,14 @@ Present a multiple-choice with a contextual recommendation. The three options:
 
 Use the channel's `typical-use` and `default-isolation` fields to pick the recommendation. Offer to explain more if the user is unsure — reference `docs/isolation-model.md` for the detailed explanation.
 
+### Work-subfolder Question (work-subdir skill)
+
+Only ask this when the work-subdir skill is installed (`ncl wirings help` lists `--work-subdir`) **and** the isolation answer was NOT "Same conversation" (agent-shared rejects a per-wiring subfolder). Ask:
+
+> Should this channel work in its own subfolder under the agent group dir (isolated files + project-scoped Codex MCP/skills), instead of the shared workspace?
+
+If yes, take a relative path (no `..`, not absolute — e.g. `projects/alpha`) and pass `--work-subdir "<path>"` to the register command below. If no, omit the flag (the channel uses the shared `/workspace/agent`). The subfolder still inherits the group's global MCP/skills.
+
 ### Register Command
 
 ```bash
@@ -108,7 +116,7 @@ pnpm exec tsx setup/index.ts --step register -- \
 
 The `register` step creates the agent group (reusing it if the folder already exists), the messaging group, and the wiring row. `createMessagingGroupAgent` auto-creates the companion `agent_destinations` row so the agent can address the channel by name.
 
-Omitted engage/policy fields default from the channel adapter's declaration (see "Channel Defaults" above). Optional overrides: `--trigger "<regex>"` (explicit engage pattern), `--engage-mode <pattern|mention|mention-sticky>`, `--is-group <true|false>`, `--unknown-sender-policy <strict|request_approval|public>`. Don't pick a mention mode on a channel whose declaration says `mentions: 'never'` — it can never engage there.
+Omitted engage/policy fields default from the channel adapter's declaration (see "Channel Defaults" above). Optional overrides: `--trigger "<regex>"` (explicit engage pattern), `--engage-mode <pattern|mention|mention-sticky>`, `--is-group <true|false>`, `--unknown-sender-policy <strict|request_approval|public>`, `--work-subdir "<relative/path>"` (per-wiring working subfolder; work-subdir skill only, rejected with `--session-mode agent-shared`). Don't pick a mention mode on a channel whose declaration says `mentions: 'never'` — it can never engage there.
 
 New agent groups are created on the instance default provider (`DEFAULT_AGENT_PROVIDER` in `.env`, or `claude` when unset). To run a group on a different provider, switch it after creation with `ncl groups config update --provider <name>` (e.g. `codex`).
 

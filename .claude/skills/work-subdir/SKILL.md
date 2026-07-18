@@ -70,7 +70,15 @@ export function getWorkSubdirsForAgentGroup(agentGroupId: string): string[] {
 }
 ```
 
-`src/db/index.ts` — ensure `getWorkSubdirsForAgentGroup` is in the `export { … } from './messaging-groups.js'` block.
+Also add the persistence helper the onboarding wiring path (2i) uses — `createMessagingGroupAgent` does not write the column:
+
+```ts
+export function setWiringWorkSubdir(id: string, workSubdir: string | null): void {
+  getDb().prepare('UPDATE messaging_group_agents SET work_subdir = ? WHERE id = ?').run(workSubdir, id);
+}
+```
+
+`src/db/index.ts` — ensure both `getWorkSubdirsForAgentGroup` and `setWiringWorkSubdir` are in the `export { … } from './messaging-groups.js'` block.
 
 ### 2d. `ncl wirings` — the `--work-subdir` flag + F1 guard
 
@@ -211,7 +219,42 @@ and in `send_file`, resolve the base against `AGENT_CWD`:
 
 `work-subdir-codex.test.ts` guards the Codex trust block.
 
-### 2h. Validate
+### 2h. Onboarding wiring — surface `work_subdir` at wire time
+
+So the guided wiring flows can set a subfolder (not just `ncl wirings create --work-subdir`), thread the flag through the setup register step and ask for it in the wiring skill.
+
+`setup/register.ts`:
+1. Import the validator and the persistence helper:
+```ts
+import { setWiringWorkSubdir } from '../src/db/messaging-groups.js';
+import { validateWorkSubdir } from '../src/work-subdir.js';
+```
+2. Add `workSubdir?: string;` to `RegisterArgs`.
+3. In `parseArgs`, handle the flag (validate here so a bad value fails the step):
+```ts
+      case '--work-subdir': {
+        const raw = (args[++i] || '').trim();
+        if (raw) result.workSubdir = validateWorkSubdir(raw);
+        break;
+      }
+```
+and after the parse loop enforce F1:
+```ts
+  if (result.workSubdir && result.sessionMode === 'agent-shared') {
+    throw new Error('--work-subdir cannot be combined with --session-mode agent-shared');
+  }
+```
+4. In the `newlyWired` branch, right after `createMessagingGroupAgent(...)`, persist it:
+```ts
+    if (parsed.workSubdir) setWiringWorkSubdir(mgaId, parsed.workSubdir);
+```
+Optionally add `WORK_SUBDIR: parsed.workSubdir ?? ''` to the emitted `REGISTER_CHANNEL` status.
+
+`.claude/skills/manage-channels/SKILL.md` — append, after the Isolation Question, a short "Work-subfolder Question" step: ask only when this skill is installed (`ncl wirings help` lists `--work-subdir`) and the isolation answer was not agent-shared (F1); take a relative path and pass `--work-subdir "<path>"` to the register command. Add `--work-subdir "<relative/path>"` to the register command's optional-overrides list.
+
+`work-subdir-cli.test.ts` behavior-tests `setWiringWorkSubdir`; the register reach-in is guarded by the build/typecheck leg (register imports `validateWorkSubdir` + `setWiringWorkSubdir`, so a drift fails typecheck — `setup/register.ts` writes to the fixed `DATA_DIR`, so a hermetic run test isn't practical).
+
+### 2i. Validate
 
 ```bash
 export PATH="/Users/tuanhv/.nvm/versions/node/v22.22.1/bin:$PATH"   # repo pins Node 22; the machine default breaks better-sqlite3
@@ -250,6 +293,7 @@ Constraints (enforced at the CLI and re-checked at spawn): relative only (no lea
 | Storage | `020-wiring-work-subdir.ts`, `schema.ts`, `types.ts` | nullable `work_subdir` column |
 | Validation | `work-subdir.ts` | `validateWorkSubdir` — one source of truth |
 | CLI | `cli/resources/wirings.ts` | `--work-subdir` + F1 guard |
+| Onboarding | `setup/register.ts` + `db/messaging-groups.ts` (`setWiringWorkSubdir`) + `/manage-channels` | wire-time `--work-subdir` (guided flows) |
 | Union | `db/messaging-groups.ts` | `getWorkSubdirsForAgentGroup` |
 | Spawn | `container-runner.ts` | resolve subdir, mkdir + `git init` (F2), `-e NANOCLAW_WORK_SUBDIR` |
 | Union → container.json (F4) | `container-config.ts` | `workSubdirs` (per-group, race-safe) |

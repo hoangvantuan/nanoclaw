@@ -19,8 +19,8 @@ In `src/db/migrations/index.ts`: delete the `import { migration020 } from './020
 
 - `src/types.ts` — remove `work_subdir?: string | null;` from `MessagingGroupAgent`.
 - `src/db/schema.ts` — remove the `work_subdir TEXT` reference line on `messaging_group_agents`.
-- `src/db/messaging-groups.ts` — delete the `getWorkSubdirsForAgentGroup` function.
-- `src/db/index.ts` — remove `getWorkSubdirsForAgentGroup` from the `./messaging-groups.js` export block.
+- `src/db/messaging-groups.ts` — delete the `getWorkSubdirsForAgentGroup` and `setWiringWorkSubdir` functions.
+- `src/db/index.ts` — remove `getWorkSubdirsForAgentGroup` and `setWiringWorkSubdir` from the `./messaging-groups.js` export block.
 
 ## 4. Revert `ncl wirings` (`src/cli/resources/wirings.ts`)
 
@@ -29,6 +29,11 @@ In `src/db/migrations/index.ts`: delete the `import { migration020 } from './020
 - Remove the `work_subdir` normalization + F1 block from `preUpdate`.
 - Remove the `args.work_subdir` block from the custom `create` handler.
 - Remove `--work-subdir` from the create verb's description.
+
+## 4b. Revert the onboarding wiring reach-ins
+
+- `setup/register.ts` — remove the `setWiringWorkSubdir` and `validateWorkSubdir` imports, the `workSubdir?` field on `RegisterArgs`, the `--work-subdir` parse case, the F1 check after the parse loop, the `setWiringWorkSubdir(mgaId, …)` call, and the `WORK_SUBDIR` status field.
+- `.claude/skills/manage-channels/SKILL.md` — remove the "Work-subfolder Question" subsection and the `--work-subdir` entry from the register command's optional-overrides list.
 
 ## 5. Revert the host container-runner (`src/container-runner.ts`)
 

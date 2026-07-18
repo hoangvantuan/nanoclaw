@@ -21,6 +21,7 @@ export {
   getMessagingGroupAgent,
   getMessagingGroupAgentByPair,
   getWorkSubdirsForAgentGroup,
+  setWiringWorkSubdir,
   updateMessagingGroupAgent,
   deleteMessagingGroupAgent,
 } from './messaging-groups.js';

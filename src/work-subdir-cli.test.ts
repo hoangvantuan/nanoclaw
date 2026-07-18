@@ -32,6 +32,7 @@ import {
   createMessagingGroup,
   getMessagingGroupAgent,
   getWorkSubdirsForAgentGroup,
+  setWiringWorkSubdir,
 } from './db/index.js';
 import { getDb } from './db/connection.js';
 import { lookup } from './cli/registry.js';
@@ -136,6 +137,16 @@ describe('getWorkSubdirsForAgentGroup', () => {
   it('returns empty when no wiring sets a subdir', async () => {
     await create({ messaging_group_id: 'mg-1', agent_group_id: 'ag-1' });
     expect(getWorkSubdirsForAgentGroup('ag-1')).toEqual([]);
+  });
+});
+
+describe('setWiringWorkSubdir (setup/register persistence reach-in)', () => {
+  it('sets and clears a wiring work_subdir', async () => {
+    const row = await create({ messaging_group_id: 'mg-1', agent_group_id: 'ag-1' });
+    setWiringWorkSubdir(row.id as string, 'projects/alpha');
+    expect(getMessagingGroupAgent(row.id as string)!.work_subdir).toBe('projects/alpha');
+    setWiringWorkSubdir(row.id as string, null);
+    expect(getMessagingGroupAgent(row.id as string)!.work_subdir ?? null).toBeNull();
   });
 });
 

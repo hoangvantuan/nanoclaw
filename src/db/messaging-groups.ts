@@ -309,6 +309,17 @@ export function getWorkSubdirsForAgentGroup(agentGroupId: string): string[] {
   ).map((r) => r.work_subdir);
 }
 
+/**
+ * Set (or clear) a wiring's work_subdir (migration 020). `createMessagingGroupAgent`
+ * doesn't write the column, so setup/onboarding paths that create a wiring and
+ * then want a per-wiring subdir call this afterwards. The caller validates the
+ * path (validateWorkSubdir) and enforces F1 (not agent-shared) — this helper
+ * only persists, and accepts null to clear.
+ */
+export function setWiringWorkSubdir(id: string, workSubdir: string | null): void {
+  getDb().prepare('UPDATE messaging_group_agents SET work_subdir = ? WHERE id = ?').run(workSubdir, id);
+}
+
 /** Get all messaging groups wired to an agent group (reverse lookup). */
 export function getMessagingGroupsByAgentGroup(agentGroupId: string): MessagingGroup[] {
   return getDb()

@@ -27,7 +27,9 @@ import {
   createMessagingGroupAgent,
   getMessagingGroupByPlatform,
   getMessagingGroupAgentByPair,
+  setWiringWorkSubdir,
 } from '../src/db/messaging-groups.js';
+import { validateWorkSubdir } from '../src/work-subdir.js';
 import { isValidGroupFolder } from '../src/group-folder.js';
 import { log } from '../src/log.js';
 import { namespacedPlatformId } from '../src/platform-id.js';
@@ -57,6 +59,8 @@ interface RegisterArgs {
   engageMode?: 'pattern' | 'mention' | 'mention-sticky';
   /** Explicit unknown_sender_policy override; omitted = channel declaration / 'strict' */
   unknownSenderPolicy?: 'strict' | 'request_approval' | 'public';
+  /** Per-wiring working subdir (migration 020); omitted = shared group dir. */
+  workSubdir?: string;
 }
 
 const ENGAGE_MODES = ['pattern', 'mention', 'mention-sticky'] as const;
@@ -127,7 +131,20 @@ function parseArgs(args: string[]): RegisterArgs {
         result.unknownSenderPolicy = raw;
         break;
       }
+      case '--work-subdir': {
+        const raw = (args[++i] || '').trim();
+        // Validate here (relative, no '..', not absolute) so a bad value fails
+        // the step instead of silently persisting. Empty = omitted.
+        if (raw) result.workSubdir = validateWorkSubdir(raw);
+        break;
+      }
     }
+  }
+
+  // F1: a per-wiring subdir is meaningless under agent-shared (one shared
+  // session across wirings). Reject the combination up front.
+  if (result.workSubdir && result.sessionMode === 'agent-shared') {
+    throw new Error('--work-subdir cannot be combined with --session-mode agent-shared');
   }
 
   return result;
@@ -278,10 +295,15 @@ export async function run(args: string[]): Promise<void> {
       priority: 0,
       created_at: new Date().toISOString(),
     });
+    // Per-wiring work_subdir (migration 020) — createMessagingGroupAgent doesn't
+    // write the column, so persist it here when requested (already validated +
+    // F1-checked in parseArgs).
+    if (parsed.workSubdir) setWiringWorkSubdir(mgaId, parsed.workSubdir);
     log.info('Wired agent to messaging group', {
       mgaId,
       agentGroup: agentGroup.id,
       messagingGroup: messagingGroup.id,
+      workSubdir: parsed.workSubdir ?? null,
     });
   }
 
@@ -349,6 +371,7 @@ export async function run(args: string[]): Promise<void> {
     REQUIRES_TRIGGER: parsed.requiresTrigger,
     ASSISTANT_NAME: parsed.assistantName,
     SESSION_MODE: parsed.sessionMode,
+    WORK_SUBDIR: parsed.workSubdir ?? '',
     NAME_UPDATED: nameUpdated,
     STATUS: 'success',
     LOG: 'logs/setup.log',
