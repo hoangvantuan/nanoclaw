@@ -1,6 +1,6 @@
 ---
 name: work-subdir
-description: "Per-wiring working subfolder for NanoClaw. Give one channel/group its own isolated working directory (own files, git repo, project-scoped Codex MCP/skills) under the agent group dir, while still inheriting the group's global MCP/skill config. Install/reapply this skill to add the `--work-subdir` flag on `ncl wirings`. Use when someone wants a channel to 'work in its own folder', a 'separate project dir per wiring', per-project MCP servers that don't leak to other chats, or asks about the `work_subdir` column."
+description: "Per-wiring working subfolder for NanoClaw. Give one channel/group its own isolated working directory (own files, git repo, project-scoped Codex MCP/skills) under the agent group dir, while still inheriting the group's global MCP/skill config. Install/reapply this skill to add the `--work-subdir` flag on `ncl wirings` and ask for a subfolder in the unknown-channel DM approval flow. Use when someone wants a channel to 'work in its own folder', a 'separate project dir per wiring', per-project MCP servers that don't leak to other chats, or asks about the `work_subdir` column."
 ---
 
 # Add per-wiring working subfolder (`work_subdir`)
@@ -11,7 +11,7 @@ Runs a wiring's container with cwd at `/workspace/agent/<work_subdir>` instead o
 
 ## Phase 1: Pre-flight
 
-Check if already applied: if `src/work-subdir.ts` exists **and** `ncl wirings help` lists `--work-subdir`, the skill is installed — skip to Phase 4 (Verify) unless you're reapplying after an upstream update (reapply is safe; every step is idempotent).
+Treat the skill as fully applied only when all four markers exist: `src/work-subdir.ts`, `src/modules/permissions/work-subdir-approval.ts`, `src/modules/permissions/index.ts` contains `promptForWorkSubdir`, and `ncl wirings help` lists `--work-subdir`. If any marker is missing, continue through Phase 2. Otherwise skip to Phase 4 (Verify) unless reapplying after an upstream update. Reapply is safe: each instruction below checks for the desired state and adds or replaces it exactly once.
 
 ## Phase 2: Apply code changes
 
@@ -23,6 +23,8 @@ S=.claude/skills/work-subdir
 cp "$S/work-subdir.ts"              src/work-subdir.ts
 cp "$S/020-wiring-work-subdir.ts"   src/db/migrations/020-wiring-work-subdir.ts
 cp "$S/work-subdir-cli.test.ts"     src/work-subdir-cli.test.ts
+cp "$S/work-subdir-approval.ts"      src/modules/permissions/work-subdir-approval.ts
+cp "$S/work-subdir-approval.test.ts" src/modules/permissions/work-subdir-approval.test.ts
 # Container (Bun) tree
 cp "$S/work-subdir-codex.test.ts"   container/agent-runner/src/providers/work-subdir-codex.test.ts
 ```
@@ -254,12 +256,88 @@ Optionally add `WORK_SUBDIR: parsed.workSubdir ?? ''` to the emitted `REGISTER_C
 
 `work-subdir-cli.test.ts` behavior-tests `setWiringWorkSubdir`; the register reach-in is guarded by the build/typecheck leg (register imports `validateWorkSubdir` + `setWiringWorkSubdir`, so a drift fails typecheck — `setup/register.ts` writes to the fixed `DATA_DIR`, so a hermetic run test isn't practical).
 
-### 2i. Validate
+### 2i. Ask for `work_subdir` before unknown-channel wiring
+
+The DM approval flow defers wiring and replay until the approver replies with a relative subfolder or a shared-folder choice. `work-subdir-approval.ts` owns the in-memory arming, validation, retry prompt, and router interceptor; keep the reach-ins in `src/modules/permissions/index.ts` small.
+
+1. Ensure `setWiringWorkSubdir` appears exactly once in the existing import from `../../db/messaging-groups.js`. Ensure these two imports exist exactly once:
+
+```ts
+import { getDb } from '../../db/connection.js';
+import { promptForWorkSubdir } from './work-subdir-approval.js';
+```
+
+2. Ensure `wireApprovedChannel` has this trailing optional argument:
+
+```ts
+async function wireApprovedChannel(
+  row: PendingChannelApproval,
+  agentGroupId: string,
+  approverId: string,
+  workSubdir: string | null = null,
+): Promise<boolean> {
+  // existing body
+}
+```
+
+Move wiring creation, optional `setWiringWorkSubdir`, sender admission, and pending-row deletion into one synchronous `getDb().transaction(() => { ... })()` block. Keep `routeInbound(event)` after the transaction. This makes wiring plus subfolder persistence atomic and ensures the first replay sees the stored subfolder:
+
+```ts
+  getDb().transaction(() => {
+    createMessagingGroupAgent({
+      // existing fields
+    });
+    if (workSubdir) setWiringWorkSubdir(mgaId, workSubdir);
+
+    const senderUserId = extractAndUpsertUser(event);
+    if (senderUserId) {
+      addMember({
+        user_id: senderUserId,
+        agent_group_id: agentGroupId,
+        added_by: approverId,
+        added_at: new Date().toISOString(),
+      });
+    }
+    deletePendingChannelApproval(row.messaging_group_id);
+  })();
+```
+
+3. In the `connect:<id>` response path, ensure the direct `wireApprovedChannel(...)` call is replaced exactly once with:
+
+```ts
+  await promptForWorkSubdir({
+    row,
+    agentGroupId: targetAgentGroupId,
+    approverId,
+    complete: wireApprovedChannel,
+  });
+```
+
+4. In the free-text new-agent interceptor, after `createNewAgentGroup(...)`, ensure the direct wiring and its old connected/error confirmation block are replaced exactly once with:
+
+```ts
+  await promptForWorkSubdir({
+    row,
+    agentGroupId: ag.id,
+    approverId: userId,
+    complete: wireApprovedChannel,
+  });
+```
+
+5. In `src/modules/permissions/channel-approval.test.ts`, ensure one `chooseSharedWorkFolder()` helper routes the owner's next DM with `{ text: 'no' }`. Ensure it is called once after each of the two direct connect-response loops, inside `approvePending`, after the new-agent name reply in the identical-wirings test, and after the name reply in the create-new-agent test. These existing tests continue through the new mandatory choice before asserting their original wiring behavior.
+
+6. In `src/modules/permissions/channel-approval.ts`, keep the direct `connect:<id>` option when exactly one agent is visible, and ensure a separate `if (visibleAgentGroups.length > 0)` block also adds `CHOOSE_EXISTING_VALUE`. Do not use `else if`: the chooser is the restart-recovery path after a new agent is created. Update the module header so both connect paths say they ask for a working folder before wiring and replay.
+
+7. Update the adjacent comments in `src/modules/permissions/index.ts` so the `wireApprovedChannel` doc says both paths complete after choosing a working folder, the value-dispatch comments say `connect:<id>` asks for a folder and `new_agent` creates then asks, and the name-interceptor comment says it asks before wiring and replay. In `channel-approval.test.ts`, update the identical-wirings comment so it no longer says the name reply wires immediately. Check the existing comment text before replacing it so reapply never duplicates anything.
+
+`work-subdir-approval.test.ts` drives the real response handler and router interceptor. It guards both prompt call sites, deferred wiring, the always-available recovery chooser, same-approver prompt serialization and stale-prompt cleanup, shared-folder choices, invalid-path retry, new-agent flow, atomic rollback/retry, and persistence before the first container wake.
+
+### 2j. Validate
 
 ```bash
 export PATH="/Users/tuanhv/.nvm/versions/node/v22.22.1/bin:$PATH"   # repo pins Node 22; the machine default breaks better-sqlite3
 pnpm run build
-pnpm exec vitest run src/work-subdir-cli.test.ts
+pnpm exec vitest run src/work-subdir-cli.test.ts src/modules/permissions/work-subdir-approval.test.ts src/modules/permissions/channel-approval.test.ts
 (export PATH="/Users/tuanhv/.bun/bin:$PATH"; cd container/agent-runner && bun run typecheck && bun test src/providers/work-subdir-codex.test.ts)
 ```
 
@@ -280,6 +358,8 @@ ncl wirings update --id <wiring-id> --work-subdir ""     # clear → back to the
 
 Constraints (enforced at the CLI and re-checked at spawn): relative only (no leading `/`), no `..` segments, and **rejected when `session_mode = agent-shared`** (F1 — that mode collapses all wirings into one session, so a per-wiring cwd can't track it). The path is normalized (`./a//b/` → `a/b`). Null/absent = the shared `/workspace/agent`. Takes effect on the wiring's next container spawn (a plain wiring change needs no image rebuild — only editing the agent-runner does).
 
+Unknown-channel approval asks in the approver's DM before it creates the wiring. Reply with a relative path, or `no`, `skip`, `shared`, `không`, `khong`, `n`, or an empty message to use the shared group directory. Invalid paths keep the prompt armed so the next DM can retry.
+
 ## Phase 4: Verify
 
 - `ncl wirings help` lists `--work-subdir`; `ncl wirings get --id <id>` shows the stored `work_subdir`.
@@ -294,6 +374,7 @@ Constraints (enforced at the CLI and re-checked at spawn): relative only (no lea
 | Validation | `work-subdir.ts` | `validateWorkSubdir` — one source of truth |
 | CLI | `cli/resources/wirings.ts` | `--work-subdir` + F1 guard |
 | Onboarding | `setup/register.ts` + `db/messaging-groups.ts` (`setWiringWorkSubdir`) + `/manage-channels` | wire-time `--work-subdir` (guided flows) |
+| DM approval | `modules/permissions/work-subdir-approval.ts` + `permissions/index.ts` | ask before wiring, capture reply, persist before replay |
 | Union | `db/messaging-groups.ts` | `getWorkSubdirsForAgentGroup` |
 | Spawn | `container-runner.ts` | resolve subdir, mkdir + `git init` (F2), `-e NANOCLAW_WORK_SUBDIR` |
 | Union → container.json (F4) | `container-config.ts` | `workSubdirs` (per-group, race-safe) |
@@ -307,6 +388,8 @@ Constraints (enforced at the CLI and re-checked at spawn): relative only (no lea
 - **MCP vs skills.** Project MCP needs only the trust block; project *skills* also need the subfolder to be a git repo (hence `git init` in `provisionWorkSubdir`). Global skills go through `$HOME/.agents/skills` and are always inherited.
 - **self-mod writes global.** `add_mcp_server` / `install_packages` change the group's `container.json` (whole group). Per-subfolder MCP is the agent writing `.codex/config.toml` inside the subfolder, not self-mod.
 - **Two env vars, one concept.** `NANOCLAW_WORK_SUBDIR` (host→runner, relative) becomes `NANOCLAW_AGENT_CWD` (runner→MCP, absolute). Keep them consistent.
+- **DM capture is in memory.** A host restart while waiting loses the next-message arming, but the durable pending approval row and original card remain. For an existing target, click its connect option again. If a new agent was already created, choose that agent through **Choose existing**; clicking **Connect new agent** creates another agent. No wiring or replay happens before a valid reply.
+- **Next-DM prompts are sequential.** A second work-subfolder prompt for the same approver is refused until the first completes. Agent naming and reject-with-reason still use the router's existing ordered interceptor pattern, so finish those prompts before opening a different prompt type for the same approver.
 - Repo rules still apply: ISO-UTC timestamps, `minimumReleaseAge` for pnpm, `bun install` (not pnpm) for agent-runner deps.
 
 ## Troubleshooting
@@ -318,3 +401,4 @@ Constraints (enforced at the CLI and re-checked at spawn): relative only (no lea
 | Project skills not found | subfolder not a git repo | `.git` exists in the subfolder |
 | Agent still in `/workspace/agent` | no subdir or not respawned | `ncl wirings get` shows `work_subdir`; wiring spawned a fresh container since the change |
 | `send_file` can't find a just-made file | stale image | rebuilt `container/agent-runner/` (`./container/build.sh`) + restarted host |
+| Subfolder reply is ignored after a restart | in-memory DM capture was lost | click connect again; for an already-created agent, use **Choose existing** and select it before replying |

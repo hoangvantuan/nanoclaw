@@ -17,7 +17,13 @@
  */
 import { recordDroppedMessage } from '../../db/dropped-messages.js';
 import { getAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
-import { createMessagingGroupAgent, getMessagingGroup, setMessagingGroupDeniedAt } from '../../db/messaging-groups.js';
+import { getDb } from '../../db/connection.js';
+import {
+  createMessagingGroupAgent,
+  getMessagingGroup,
+  setMessagingGroupDeniedAt,
+  setWiringWorkSubdir,
+} from '../../db/messaging-groups.js';
 import { resolveWiringDefaults } from '../../channels/channel-defaults.js';
 import {
   routeInbound,
@@ -57,6 +63,7 @@ import { hasAdminPrivilege } from './db/user-roles.js';
 import { getUser, upsertUser } from './db/users.js';
 import { requestSenderApproval } from './sender-approval.js';
 import { ensureUserDm } from './user-dm.js';
+import { promptForWorkSubdir } from './work-subdir-approval.js';
 
 // ── Free-text name input state ──
 // Tracks approvers waiting for a text reply with the agent name. Keyed by
@@ -305,9 +312,9 @@ setChannelRequestGate(async (mg, event) => {
 
 /**
  * Wire an approved channel to an agent group and replay the stored event.
- * Shared by both approve paths (connect-existing button, free-text new-agent
- * name reply) so they produce identical wirings. Returns true when the wiring
- * was created — callers must not confirm success to the approver otherwise.
+ * Completes both approval paths after the approver chooses a working folder
+ * (connect-existing button, or free-text new-agent name reply). Returns true
+ * when the wiring was created — callers must not confirm success otherwise.
  *
  * Engage defaults come from the channel's declared defaults (DM vs group
  * context). isGroup uses the adapter's own flag with the persisted row as
@@ -318,6 +325,7 @@ async function wireApprovedChannel(
   row: PendingChannelApproval,
   agentGroupId: string,
   approverId: string,
+  workSubdir: string | null = null,
 ): Promise<boolean> {
   let event: InboundEvent;
   try {
@@ -355,21 +363,36 @@ async function wireApprovedChannel(
   }
 
   const mgaId = `mga-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  createMessagingGroupAgent({
-    id: mgaId,
-    messaging_group_id: row.messaging_group_id,
-    agent_group_id: agentGroupId,
-    engage_mode: engage.engage_mode,
-    engage_pattern: engage.engage_pattern,
-    // Deliberate card-flow choices, not channel defaults: the triggering
-    // sender is auto-admitted below, so 'known' keeps other strangers gated;
-    // 'accumulate' / 'shared' / priority 0 are the flow's fixed semantics.
-    sender_scope: 'known',
-    ignored_message_policy: 'accumulate',
-    session_mode: 'shared',
-    priority: 0,
-    created_at: new Date().toISOString(),
-  });
+  getDb().transaction(() => {
+    createMessagingGroupAgent({
+      id: mgaId,
+      messaging_group_id: row.messaging_group_id,
+      agent_group_id: agentGroupId,
+      engage_mode: engage.engage_mode,
+      engage_pattern: engage.engage_pattern,
+      // Deliberate card-flow choices, not channel defaults: the triggering
+      // sender is auto-admitted below, so 'known' keeps other strangers gated;
+      // 'accumulate' / 'shared' / priority 0 are the flow's fixed semantics.
+      sender_scope: 'known',
+      ignored_message_policy: 'accumulate',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: new Date().toISOString(),
+    });
+    if (workSubdir) setWiringWorkSubdir(mgaId, workSubdir);
+
+    const senderUserId = extractAndUpsertUser(event);
+    if (senderUserId) {
+      addMember({
+        user_id: senderUserId,
+        agent_group_id: agentGroupId,
+        added_by: approverId,
+        added_at: new Date().toISOString(),
+      });
+    }
+
+    deletePendingChannelApproval(row.messaging_group_id);
+  })();
   log.info('Channel registration approved — wiring created', {
     messagingGroupId: row.messaging_group_id,
     agentGroupId,
@@ -377,18 +400,6 @@ async function wireApprovedChannel(
     engageMode: engage.engage_mode,
     approverId,
   });
-
-  const senderUserId = extractAndUpsertUser(event);
-  if (senderUserId) {
-    addMember({
-      user_id: senderUserId,
-      agent_group_id: agentGroupId,
-      added_by: approverId,
-      added_at: new Date().toISOString(),
-    });
-  }
-
-  deletePendingChannelApproval(row.messaging_group_id);
 
   try {
     await routeInbound(event);
@@ -409,10 +420,10 @@ async function wireApprovedChannel(
  * handlers get a shot.
  *
  * Value dispatch:
- *   connect:<id>    — wire to an existing agent group, replay the message
+ *   connect:<id>    — ask for a working folder, then wire and replay
  *   choose_existing — send a follow-up card listing all agents
  *   new_agent       — prompt for a free-text agent name (interceptor
- *                     captures the reply and creates immediately)
+ *                     creates it, then asks for a working folder)
  *   reject          — set denied_at, delete pending row
  */
 async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<boolean> {
@@ -567,8 +578,13 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
     return true;
   }
 
-  // ── Wire + replay (shared path for connect and create) ──
-  await wireApprovedChannel(row, targetAgentGroupId, approverId);
+  // ── Ask for the working subfolder before wiring + replay ──
+  await promptForWorkSubdir({
+    row,
+    agentGroupId: targetAgentGroupId,
+    approverId,
+    complete: wireApprovedChannel,
+  });
   return true;
 }
 
@@ -576,7 +592,7 @@ registerResponseHandler(handleChannelApprovalResponse);
 
 // ── Free-text name interceptor ──
 // Captures the next DM from an approver who clicked "Create new agent",
-// creates the agent immediately, wires the channel, and replays.
+// creates the agent, then asks for a working folder before wiring and replay.
 
 registerMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
   const userId = extractAndUpsertUser(event);
@@ -612,26 +628,11 @@ registerMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
     folder: ag.folder,
   });
 
-  const wired = await wireApprovedChannel(row, ag.id, userId);
-
-  const adapter = getDeliveryAdapter();
-  if (adapter) {
-    const dm = await ensureUserDm(row.approver_user_id);
-    if (dm) {
-      adapter
-        .deliver(
-          dm.channel_type,
-          dm.platform_id,
-          null,
-          'chat-sdk',
-          JSON.stringify({
-            text: wired
-              ? `✅ Agent "${ag.name}" created and connected.`
-              : `⚠️ Agent "${ag.name}" was created but the channel couldn't be connected — check the host logs.`,
-          }),
-        )
-        .catch(() => {});
-    }
-  }
+  await promptForWorkSubdir({
+    row,
+    agentGroupId: ag.id,
+    approverId: userId,
+    complete: wireApprovedChannel,
+  });
   return true;
 });

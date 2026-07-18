@@ -8,6 +8,8 @@ Idempotent — safe to run even if some steps were never applied. Reverses every
 rm -f src/work-subdir.ts \
       src/db/migrations/020-wiring-work-subdir.ts \
       src/work-subdir-cli.test.ts \
+      src/modules/permissions/work-subdir-approval.ts \
+      src/modules/permissions/work-subdir-approval.test.ts \
       container/agent-runner/src/providers/work-subdir-codex.test.ts
 ```
 
@@ -34,6 +36,46 @@ In `src/db/migrations/index.ts`: delete the `import { migration020 } from './020
 
 - `setup/register.ts` — remove the `setWiringWorkSubdir` and `validateWorkSubdir` imports, the `workSubdir?` field on `RegisterArgs`, the `--work-subdir` parse case, the F1 check after the parse loop, the `setWiringWorkSubdir(mgaId, …)` call, and the `WORK_SUBDIR` status field.
 - `.claude/skills/manage-channels/SKILL.md` — remove the "Work-subfolder Question" subsection and the `--work-subdir` entry from the register command's optional-overrides list.
+
+## 4c. Revert the unknown-channel DM approval reach-ins
+
+In `src/modules/permissions/index.ts`:
+
+- Remove `setWiringWorkSubdir` from the `../../db/messaging-groups.js` import. Remove the `getDb` and `promptForWorkSubdir` imports.
+- Remove the trailing `workSubdir: string | null = null` argument from `wireApprovedChannel` and delete `if (workSubdir) setWiringWorkSubdir(mgaId, workSubdir);`.
+- Unwrap the `getDb().transaction(() => { ... })()` block: leave `createMessagingGroupAgent(...)`, sender admission, and `deletePendingChannelApproval(...)` as their original sequential statements before `routeInbound(event)`.
+- Replace the `promptForWorkSubdir(...)` block in the `connect:<id>` response path with `await wireApprovedChannel(row, targetAgentGroupId, approverId);`.
+- Replace the `promptForWorkSubdir(...)` block after a new agent is created with the original direct wiring and confirmation:
+
+```ts
+  const wired = await wireApprovedChannel(row, ag.id, userId);
+
+  const adapter = getDeliveryAdapter();
+  if (adapter) {
+    const dm = await ensureUserDm(row.approver_user_id);
+    if (dm) {
+      adapter
+        .deliver(
+          dm.channel_type,
+          dm.platform_id,
+          null,
+          'chat-sdk',
+          JSON.stringify({
+            text: wired
+              ? `✅ Agent "${ag.name}" created and connected.`
+              : `⚠️ Agent "${ag.name}" was created but the channel couldn't be connected — check the host logs.`,
+          }),
+        )
+        .catch(() => {});
+    }
+  }
+```
+
+Restore the three adjacent comment blocks in `src/modules/permissions/index.ts`: `wireApprovedChannel` is shared by the two approve paths, `connect:<id>` wires and replays while `new_agent` captures and creates immediately, and the name interceptor creates, wires, and replays. These are comment replacements, not additions.
+
+In `src/modules/permissions/channel-approval.ts`, restore `buildApprovalOptions` to add `CHOOSE_EXISTING_VALUE` only in the `else if (visibleAgentGroups.length > 1)` branch after the single-agent direct-connect branch. Restore the module header so connect and new-agent replies wire and replay immediately without mentioning a working-folder question.
+
+In `src/modules/permissions/channel-approval.test.ts`, delete the `chooseSharedWorkFolder()` helper and its five calls. Restore the identical-wirings comment to `Owner replies with the agent name in their DM — interceptor wires.` The original tests then assert wiring immediately after the connect click or new-agent name reply.
 
 ## 5. Revert the host container-runner (`src/container-runner.ts`)
 
@@ -66,4 +108,4 @@ pnpm run build && ./container/build.sh
 
 ## Verification
 
-`ncl wirings help` no longer lists `--work-subdir`; `pnpm run build` and `cd container/agent-runner && bun run typecheck` are clean; no `work-subdir` test files remain in `src/` or `container/agent-runner/src/`.
+`ncl wirings help` no longer lists `--work-subdir`; `pnpm run build` and `cd container/agent-runner && bun run typecheck` are clean; no `work-subdir` source or test files remain in `src/` or `container/agent-runner/src/`.

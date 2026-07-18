@@ -158,6 +158,21 @@ function dmEvent(platformId: string, text = 'hello') {
   };
 }
 
+async function chooseSharedWorkFolder(): Promise<void> {
+  const { routeInbound } = await import('../../router.js');
+  await routeInbound({
+    channelType: 'telegram',
+    platformId: 'dm-owner',
+    threadId: null,
+    message: {
+      id: `work-subdir-reply-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'chat' as const,
+      content: JSON.stringify({ senderId: 'owner', senderName: 'Owner', text: 'no' }),
+      timestamp: now(),
+    },
+  });
+}
+
 describe('unknown-channel registration flow', () => {
   it('delivers an approval card on mention into an unwired group', async () => {
     const { routeInbound } = await import('../../router.js');
@@ -239,6 +254,7 @@ describe('unknown-channel registration flow', () => {
       });
       if (claimed) break;
     }
+    await chooseSharedWorkFolder();
 
     // Wiring created with defaults.
     const mga = getDb()
@@ -294,6 +310,7 @@ describe('unknown-channel registration flow', () => {
       });
       if (claimed) break;
     }
+    await chooseSharedWorkFolder();
 
     const mga = getDb()
       .prepare('SELECT engage_mode, engage_pattern FROM messaging_group_agents WHERE messaging_group_id = ?')
@@ -342,6 +359,7 @@ describe('unknown-channel registration flow', () => {
       });
       if (claimed) break;
     }
+    await chooseSharedWorkFolder();
     return pending.messaging_group_id;
   }
 
@@ -408,7 +426,8 @@ describe('unknown-channel registration flow', () => {
       });
       if (claimed) break;
     }
-    // Owner replies with the agent name in their DM — interceptor wires.
+    // Owner replies with the agent name in their DM; the folder reply below
+    // completes the wiring.
     await routeInbound({
       channelType: 'telegram',
       platformId: 'dm-owner',
@@ -420,6 +439,7 @@ describe('unknown-channel registration flow', () => {
         timestamp: now(),
       },
     });
+    await chooseSharedWorkFolder();
     await new Promise((r) => setTimeout(r, 10));
 
     const select =
@@ -628,6 +648,7 @@ describe('unknown-channel registration flow', () => {
         timestamp: now(),
       },
     });
+    await chooseSharedWorkFolder();
 
     const created = getDb().prepare("SELECT id FROM agent_groups WHERE name = 'Newbie'").get() as
       | { id: string }

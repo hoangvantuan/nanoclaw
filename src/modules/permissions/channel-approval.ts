@@ -9,8 +9,8 @@
  *   2. Pick an eligible approver (owner / admin) and a reachable DM for
  *      them, reusing the same primitives the sender-approval flow uses.
  *   3. Deliver a card with three action families:
- *        a. Connect to [agent] — one button per existing agent group.
- *           Single-agent installs get a one-click connect.
+ *        a. Connect to [agent] — single-agent installs get a one-click
+ *           connect plus a chooser that can recover multi-step setup.
  *        b. Connect new agent — prompts for a free-text name, creates
  *           the agent immediately on reply.
  *        c. Reject — deny the channel.
@@ -18,6 +18,7 @@
  *      so it can be re-routed on connect/create.
  *
  * On connect (handler in index.ts):
+ *   - Ask the approver for a working subfolder or the shared-folder choice
  *   - Create `messaging_group_agents` with the channel's declared engage
  *     defaults (resolveWiringDefaults, DM vs group context;
  *      sender_scope='known', ignored_message_policy='accumulate')
@@ -27,8 +28,8 @@
  *
  * On connect new agent (handler in index.ts):
  *   - Prompt for a free-text agent name via DM
- *   - On reply: create the agent group + filesystem, then wire
- *     and replay as above
+ *   - On reply: create the agent group + filesystem, ask for a working
+ *     subfolder, then wire and replay as above
  *
  * On reject:
  *   - Set `messaging_groups.denied_at = now()` so the router stops
@@ -96,7 +97,8 @@ function buildApprovalOptions(agentGroups: AgentGroup[], approverUserId?: string
       value: `${CONNECT_PREFIX}${visibleAgentGroups[0].id}`,
       style: 'primary',
     });
-  } else if (visibleAgentGroups.length > 1) {
+  }
+  if (visibleAgentGroups.length > 0) {
     options.push({
       label: 'Choose existing agent',
       selectedLabel: '📋 Choosing…',
