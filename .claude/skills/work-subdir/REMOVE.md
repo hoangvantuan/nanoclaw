@@ -1,0 +1,64 @@
+# Remove per-wiring working subfolder (`work_subdir`)
+
+Idempotent — safe to run even if some steps were never applied. Reverses every change apply made. (The migration already applied to a live DB leaves the nullable `work_subdir` column in place; that is harmless dead storage — dropping a column needs a SQLite table rebuild, so leave it unless you specifically need it gone.)
+
+## 1. Delete the copied files
+
+```bash
+rm -f src/work-subdir.ts \
+      src/db/migrations/020-wiring-work-subdir.ts \
+      src/work-subdir-cli.test.ts \
+      container/agent-runner/src/providers/work-subdir-codex.test.ts
+```
+
+## 2. Unregister migration 020
+
+In `src/db/migrations/index.ts`: delete the `import { migration020 } from './020-wiring-work-subdir.js';` line and the `migration020,` entry from the `migrations` array.
+
+## 3. Revert the DB layer
+
+- `src/types.ts` — remove `work_subdir?: string | null;` from `MessagingGroupAgent`.
+- `src/db/schema.ts` — remove the `work_subdir TEXT` reference line on `messaging_group_agents`.
+- `src/db/messaging-groups.ts` — delete the `getWorkSubdirsForAgentGroup` function.
+- `src/db/index.ts` — remove `getWorkSubdirsForAgentGroup` from the `./messaging-groups.js` export block.
+
+## 4. Revert `ncl wirings` (`src/cli/resources/wirings.ts`)
+
+- Remove the `import { validateWorkSubdir } from '../../work-subdir.js';` import and the `WORK_SUBDIR_AGENT_SHARED_ERROR` const.
+- Remove the `work_subdir` column from the `columns` array.
+- Remove the `work_subdir` normalization + F1 block from `preUpdate`.
+- Remove the `args.work_subdir` block from the custom `create` handler.
+- Remove `--work-subdir` from the create verb's description.
+
+## 5. Revert the host container-runner (`src/container-runner.ts`)
+
+- Drop `execFileSync` from the `child_process` import; remove the `getMessagingGroupAgentByPair` and `validateWorkSubdir` imports.
+- Delete the `resolveSessionWorkSubdir` and `provisionWorkSubdir` functions.
+- Remove the `workSubdir` resolve/provision block in `spawnContainer` and the `workSubdir` argument passed to `buildContainerArgs`.
+- Remove the trailing `workSubdir?: string | null` parameter from `buildContainerArgs` and the `NANOCLAW_WORK_SUBDIR` env push.
+
+## 6. Revert host container-config (`src/container-config.ts`)
+
+- Remove the `getWorkSubdirsForAgentGroup` import, the `workSubdirs?: string[];` field on `ContainerConfig`, and the `workSubdirs` materialize block in `materializeContainerJson`.
+
+## 7. Revert the container agent-runner
+
+- `container/agent-runner/src/config.ts` — remove `workSubdirs?: string[];` from `RunnerConfig` and its `loadConfig` line.
+- `container/agent-runner/src/providers/types.ts` — remove `trustedWorkspaces?: string[];` from `ProviderOptions`.
+- `container/agent-runner/src/index.ts` — restore `const CWD = '/workspace/agent'`; delete `resolveCwd`/`AGENT_ROOT`, the `trustedWorkspaces` computation, the `NANOCLAW_AGENT_CWD` MCP env, the `trustedWorkspaces` createProvider option, and pass `cwd: CWD` to `runPollLoop`.
+- `container/agent-runner/src/mcp-tools/core.ts` — remove the `AGENT_CWD` const and restore `send_file`'s base to `path.resolve('/workspace/agent', filePath)`.
+- `container/agent-runner/src/providers/codex-app-server.ts` — remove `trustedProjects` from `writeCodexConfigToml`'s opts and delete the trusted-project block loop.
+- `container/agent-runner/src/providers/codex.ts` — remove the `trustedProjects` field and the `trustedProjects:` argument in the `writeCodexConfigToml(...)` call.
+
+## 8. Rebuild and restart
+
+```bash
+export PATH="/Users/tuanhv/.nvm/versions/node/v22.22.1/bin:$PATH"
+pnpm run build && ./container/build.sh
+# macOS: launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+# Linux: systemctl --user restart nanoclaw
+```
+
+## Verification
+
+`ncl wirings help` no longer lists `--work-subdir`; `pnpm run build` and `cd container/agent-runner && bun run typecheck` are clean; no `work-subdir` test files remain in `src/` or `container/agent-runner/src/`.
