@@ -13,6 +13,7 @@ import path from 'path';
 
 import { GROUPS_DIR } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
+import { getWorkSubdirsForAgentGroup } from './db/messaging-groups.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
@@ -43,6 +44,15 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+  /**
+   * Distinct per-wiring working subdirs across this agent group (migration
+   * 020). Per-group data — every session of the group materializes the same
+   * list, so a parallel spawn writing the shared container.json is a no-op
+   * race. Consumed by the container's Codex provider to write a `trusted`
+   * project block per subdir so project-scoped MCP/skill config is honored.
+   * Absent when the group has no subdir'd wirings (keeps container.json stable).
+   */
+  workSubdirs?: string[];
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -79,6 +89,11 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   if (!row) throw new Error(`Container config not found for agent group: ${agentGroupId}`);
 
   const config = configFromDb(row, group);
+
+  // Union of per-wiring working subdirs (migration 020). Only attach when
+  // non-empty so groups without subdir'd wirings keep an unchanged container.json.
+  const workSubdirs = getWorkSubdirsForAgentGroup(agentGroupId);
+  if (workSubdirs.length > 0) config.workSubdirs = workSubdirs;
 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);

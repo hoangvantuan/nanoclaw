@@ -104,6 +104,7 @@ export class CodexProvider implements AgentProvider {
   private readonly mcpServers: Record<string, McpServerConfig>;
   private readonly model?: string;
   private readonly effort?: CodexReasoningEffort;
+  private readonly trustedProjects?: string[];
   private readonly runtime: CodexRuntimeDeps;
 
   constructor(options: ProviderOptions = {}, runtime: CodexRuntimeDeps = defaultCodexRuntimeDeps) {
@@ -111,6 +112,7 @@ export class CodexProvider implements AgentProvider {
     this.model = options.model;
     this.runtime = runtime;
     this.effort = normalizeEffort(options.effort);
+    this.trustedProjects = options.trustedWorkspaces;
   }
 
   isSessionInvalid(err: unknown): boolean {
@@ -148,7 +150,11 @@ export class CodexProvider implements AgentProvider {
     const self = this;
 
     async function* gen(): AsyncGenerator<ProviderEvent> {
-      self.runtime.writeCodexConfigToml(self.mcpServers, { model: self.model, effort: self.effort });
+      self.runtime.writeCodexConfigToml(self.mcpServers, {
+        model: self.model,
+        effort: self.effort,
+        trustedProjects: self.trustedProjects,
+      });
       const server = self.runtime.spawnCodexAppServer();
       activeServer = server;
       self.runtime.attachCodexAutoApproval(server);

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
+import { getDb } from './connection.js';
 import {
   initTestDb,
   closeDb,
@@ -18,6 +19,7 @@ import {
   createMessagingGroupAgent,
   getMessagingGroupAgents,
   getMessagingGroupAgent,
+  getWorkSubdirsForAgentGroup,
   updateMessagingGroupAgent,
   deleteMessagingGroupAgent,
   createSession,
@@ -70,6 +72,85 @@ describe('migrations', () => {
     expect(col!.type).toBe('INTEGER');
     expect(col!.notnull).toBe(0);
     expect(col!.dflt_value).toBeNull();
+  });
+
+  it('adds messaging_group_agents.work_subdir as a nullable, default-free column (020)', () => {
+    const db = initTestDb();
+    runMigrations(db);
+    const col = db
+      .prepare(
+        `SELECT type, "notnull", dflt_value FROM pragma_table_info('messaging_group_agents') WHERE name = 'work_subdir'`,
+      )
+      .get() as { type: string; notnull: number; dflt_value: unknown } | undefined;
+    expect(col).toBeDefined();
+    expect(col!.type).toBe('TEXT');
+    expect(col!.notnull).toBe(0);
+    expect(col!.dflt_value).toBeNull();
+  });
+});
+
+describe('getWorkSubdirsForAgentGroup', () => {
+  function wire(id: string, mgId: string, agId: string, workSubdir: string | null) {
+    createMessagingGroupAgent({
+      id,
+      messaging_group_id: mgId,
+      agent_group_id: agId,
+      engage_mode: 'mention',
+      engage_pattern: null,
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now(),
+    });
+    // createMessagingGroupAgent doesn't insert work_subdir — set it directly.
+    if (workSubdir !== null) {
+      getDb().prepare('UPDATE messaging_group_agents SET work_subdir = ? WHERE id = ?').run(workSubdir, id);
+    }
+  }
+
+  beforeEach(() => {
+    createAgentGroup({ id: 'ag-1', name: 'A', folder: 'a', agent_provider: null, created_at: now() });
+    createAgentGroup({ id: 'ag-2', name: 'B', folder: 'b', agent_provider: null, created_at: now() });
+    for (const m of ['mg-1', 'mg-2', 'mg-3', 'mg-other']) {
+      createMessagingGroup({
+        id: m,
+        channel_type: 'test',
+        platform_id: `pid-${m}`,
+        instance: 'test',
+        name: null,
+        is_group: 0,
+        unknown_sender_policy: 'strict',
+        created_at: now(),
+      });
+    }
+  });
+
+  it('returns distinct, sorted, non-empty subdirs scoped to the agent group', () => {
+    wire('w1', 'mg-1', 'ag-1', 'projects/beta');
+    wire('w2', 'mg-2', 'ag-1', 'projects/alpha');
+    wire('w3', 'mg-3', 'ag-1', 'projects/beta'); // duplicate value
+    wire('w4', 'mg-other', 'ag-2', 'projects/other'); // different group
+    // A wiring with no subdir must not contribute.
+    createMessagingGroup({
+      id: 'mg-null',
+      channel_type: 'test',
+      platform_id: 'pid-null',
+      instance: 'test',
+      name: null,
+      is_group: 0,
+      unknown_sender_policy: 'strict',
+      created_at: now(),
+    });
+    wire('w5', 'mg-null', 'ag-1', null);
+
+    expect(getWorkSubdirsForAgentGroup('ag-1')).toEqual(['projects/alpha', 'projects/beta']);
+    expect(getWorkSubdirsForAgentGroup('ag-2')).toEqual(['projects/other']);
+  });
+
+  it('returns empty when no wiring sets a subdir', () => {
+    wire('w1', 'mg-1', 'ag-1', null);
+    expect(getWorkSubdirsForAgentGroup('ag-1')).toEqual([]);
   });
 });
 

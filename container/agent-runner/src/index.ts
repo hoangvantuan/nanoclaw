@@ -40,11 +40,41 @@ function log(msg: string): void {
   console.error(`[agent-runner] ${msg}`);
 }
 
-const CWD = '/workspace/agent';
+const AGENT_ROOT = '/workspace/agent';
+
+/**
+ * Resolve the working directory for this session. Per-wiring `work_subdir`
+ * (migration 020) arrives via NANOCLAW_WORK_SUBDIR — join it under the group
+ * dir so this wiring works in an isolated project dir while still inheriting
+ * the group's global config. Absent → the shared group dir, unchanged. The
+ * host validates and provisions the subdir; the mkdir here is a defensive
+ * idempotent backstop (the group dir is RW-mounted).
+ */
+function resolveCwd(): string {
+  const subdir = process.env.NANOCLAW_WORK_SUBDIR?.trim();
+  if (!subdir) return AGENT_ROOT;
+  const cwd = path.join(AGENT_ROOT, subdir);
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+  } catch (err) {
+    log(`Failed to ensure work subdir ${cwd}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return cwd;
+}
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const providerName = config.provider.toLowerCase() as ProviderName;
+
+  const cwd = resolveCwd();
+  if (cwd !== AGENT_ROOT) log(`Working directory: ${cwd}`);
+
+  // Absolute container paths of every per-wiring subdir in this group (union
+  // from container.json). Providers that support project-scoped config (Codex)
+  // mark these trusted so their `.codex/config.toml` MCP + `.agents/skills`
+  // are honored. Include the current cwd defensively.
+  const trustedWorkspaces = (config.workSubdirs ?? []).map((s) => path.join(AGENT_ROOT, s));
+  if (cwd !== AGENT_ROOT && !trustedWorkspaces.includes(cwd)) trustedWorkspaces.push(cwd);
 
   log(`Starting v2 agent-runner (provider: ${providerName})`);
 
@@ -88,7 +118,10 @@ async function main(): Promise<void> {
     nanoclaw: {
       command: 'bun',
       args: ['run', mcpServerPath],
-      env: {},
+      // Publish the session cwd so file-taking tools (send_file) resolve
+      // relative paths against the agent's actual working dir, not a hardcoded
+      // /workspace/agent (migration 020).
+      env: { NANOCLAW_AGENT_CWD: cwd },
     },
   };
 
@@ -104,13 +137,14 @@ async function main(): Promise<void> {
     additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
     model: config.model,
     effort: config.effort,
+    trustedWorkspaces: trustedWorkspaces.length > 0 ? trustedWorkspaces : undefined,
   });
   provider.registerMemorySessionHook(MEMORY_SESSION_HOOK);
 
   await runPollLoop({
     provider,
     providerName,
-    cwd: CWD,
+    cwd,
     systemContext: { instructions },
   });
 }

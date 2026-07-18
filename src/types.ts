@@ -133,6 +133,16 @@ export interface MessagingGroupAgent {
    * updating.
    */
   threads?: number | null;
+  /**
+   * Per-wiring working-subdirectory override (migration 020). NULL = the
+   * session works in the shared group dir (/workspace/agent). A relative path
+   * (validated at the CLI: relative, no `..`, never session_mode='agent-shared')
+   * makes the session's container cwd /workspace/agent/<work_subdir> — an
+   * isolated project dir that still inherits the group's global MCP/skill
+   * config. Optional on the TS type (denied_at convention) so pre-migration
+   * fixtures don't need updating.
+   */
+  work_subdir?: string | null;
   created_at: string;
 }
 

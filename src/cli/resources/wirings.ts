@@ -16,8 +16,19 @@ import {
 } from '../../db/messaging-groups.js';
 import { log } from '../../log.js';
 import type { MessagingGroup, MessagingGroupAgent } from '../../types.js';
+import { validateWorkSubdir } from '../../work-subdir.js';
 import { registerResource } from '../crud.js';
 import { projectDestinationsToSessions } from './destinations.js';
+
+/**
+ * F1: a per-wiring work_subdir is meaningless under session_mode='agent-shared'.
+ * That mode collapses every messaging group wired to the agent into ONE session
+ * (see resolveSession in src/session-manager.ts) whose messaging_group_id is
+ * frozen to whichever group created it — so the cwd can't track a per-wiring
+ * subdir. Reject the contradiction at write time rather than silently ignore it.
+ */
+const WORK_SUBDIR_AGENT_SHARED_ERROR =
+  'work-subdir cannot be combined with session_mode=agent-shared (that mode shares one session across all wirings, so a per-wiring working dir has no effect)';
 
 /**
  * Pass-1 parity with the generic create: enum validation for explicit flags
@@ -117,6 +128,13 @@ registerResource({
       updatable: true,
     },
     {
+      name: 'work_subdir',
+      type: 'string',
+      description:
+        'Per-wiring working directory, relative to the group dir. NULL (default) = the shared group dir (/workspace/agent). A relative path (no "..", no absolute) gives this wiring an isolated cwd at /workspace/agent/<work_subdir> that still inherits the group\'s global MCP/skill config. Rejected with session_mode=agent-shared. Pass an empty value on update to clear it.',
+      updatable: true,
+    },
+    {
       name: 'priority',
       type: 'number',
       description: 'Fanout order when multiple agents are wired to the same messaging group — higher priority first.',
@@ -136,6 +154,20 @@ registerResource({
   preUpdate: (updates, current) => {
     const mg = requireMessagingGroup(current.messaging_group_id);
     if (updates.threads !== undefined) updates.threads = normalizeThreads(updates.threads);
+
+    // work_subdir: normalize/validate, or clear to NULL on an empty value.
+    if (updates.work_subdir !== undefined) {
+      const raw = String(updates.work_subdir).trim();
+      updates.work_subdir = raw ? validateWorkSubdir(raw) : null;
+    }
+    // F1: reject the agent-shared + work_subdir combination against the merged
+    // (post-update) row, so neither "set subdir on an agent-shared wiring" nor
+    // "flip an existing subdir'd wiring to agent-shared" can slip through.
+    const mergedMode = updates.session_mode ?? current.session_mode;
+    const mergedSubdir = updates.work_subdir !== undefined ? updates.work_subdir : current.work_subdir;
+    if (mergedMode === 'agent-shared' && mergedSubdir) {
+      throw new Error(WORK_SUBDIR_AGENT_SHARED_ERROR);
+    }
 
     const merged: EngageValues = { ...current, ...updates };
     // Legacy rows can be engage_mode='pattern' with a NULL pattern (the
@@ -159,7 +191,7 @@ registerResource({
     create: {
       access: 'approval',
       description:
-        'Wire a messaging group to an agent group. Identify the messaging group by --messaging-group-id OR --channel-type + --platform-id (+ --instance); identify the agent by --agent-group-id OR --agent-group <folder>. Idempotent on (messaging group, agent group). Engagement flags: --engage-mode, --engage-pattern, --session-mode, --sender-scope, --ignored-message-policy, --threads, --priority. Omitted engage flags default from the channel adapter declaration.',
+        'Wire a messaging group to an agent group. Identify the messaging group by --messaging-group-id OR --channel-type + --platform-id (+ --instance); identify the agent by --agent-group-id OR --agent-group <folder>. Idempotent on (messaging group, agent group). Engagement flags: --engage-mode, --engage-pattern, --session-mode, --sender-scope, --ignored-message-policy, --threads, --work-subdir, --priority. Omitted engage flags default from the channel adapter declaration.',
       handler: async (args) => {
         // Resolve the messaging group.
         let mgId = args.messaging_group_id as string | undefined;
@@ -244,6 +276,17 @@ registerResource({
         if (values.ignored_message_policy === undefined) values.ignored_message_policy = 'drop';
         if (values.session_mode === undefined) values.session_mode = 'shared';
         if (values.priority === undefined) values.priority = 0;
+
+        // work_subdir: validate the relative path and enforce F1 against the
+        // now-resolved session_mode. Left absent (column NULL) when omitted,
+        // preserving the shared-group-dir behavior for existing callers.
+        if (args.work_subdir !== undefined) {
+          const raw = String(args.work_subdir).trim();
+          if (raw) {
+            if (values.session_mode === 'agent-shared') throw new Error(WORK_SUBDIR_AGENT_SHARED_ERROR);
+            values.work_subdir = validateWorkSubdir(raw);
+          }
+        }
 
         // postCreate parity, in one transaction with the INSERT (a throw rolls
         // back the parent row). Dynamic INSERT — not createMessagingGroupAgent,

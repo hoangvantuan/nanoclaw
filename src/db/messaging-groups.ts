@@ -289,6 +289,26 @@ export function deleteMessagingGroupAgent(id: string): void {
   getDb().prepare('DELETE FROM messaging_group_agents WHERE id = ?').run(id);
 }
 
+/**
+ * Distinct, non-empty `work_subdir` values across every wiring of an agent
+ * group. Per-group data (identical from every session of the group), so the
+ * host can safely materialize it into the shared container.json even when
+ * multiple sessions of the same group spawn in parallel — each writes the same
+ * union. Used by the Codex trust block (writeCodexConfigToml) so project-scoped
+ * `.codex/config.toml` under any of these subdirs is honored.
+ */
+export function getWorkSubdirsForAgentGroup(agentGroupId: string): string[] {
+  return (
+    getDb()
+      .prepare(
+        `SELECT DISTINCT work_subdir FROM messaging_group_agents
+         WHERE agent_group_id = ? AND work_subdir IS NOT NULL AND work_subdir != ''
+         ORDER BY work_subdir`,
+      )
+      .all(agentGroupId) as { work_subdir: string }[]
+  ).map((r) => r.work_subdir);
+}
+
 /** Get all messaging groups wired to an agent group (reverse lookup). */
 export function getMessagingGroupsByAgentGroup(agentGroupId: string): MessagingGroup[] {
   return getDb()

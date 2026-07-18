@@ -372,7 +372,7 @@ export function attachCodexAutoApproval(server: AppServer): void {
 
 export function writeCodexConfigToml(
   servers: Record<string, CodexMcpServer>,
-  opts: { model?: string; effort?: string } = {},
+  opts: { model?: string; effort?: string; trustedProjects?: string[] } = {},
 ): void {
   const codexConfigDir = path.join(process.env.HOME || '/home/node', '.codex');
   fs.mkdirSync(codexConfigDir, { recursive: true });
@@ -387,6 +387,20 @@ export function writeCodexConfigToml(
   if (opts.model) lines.push(`model = ${tomlBasicString(opts.model)}`);
   if (opts.effort) lines.push(`model_reasoning_effort = ${tomlBasicString(opts.effort)}`);
   lines.push('');
+
+  // Trust each per-wiring working dir (migration 020). Codex 0.144.5 MERGES a
+  // project's `.codex/config.toml` MCP servers with the global set — but only
+  // when the cwd is a `trusted` project. Written for EVERY subdir in the group
+  // (not just the current cwd) so parallel same-group sessions all emit the
+  // same content into the shared CODEX_HOME/config.toml — the write race is
+  // then harmless. Deduped + sorted for a stable file. No-op when unset, so a
+  // group without subdir'd wirings keeps its config unchanged.
+  const trusted = [...new Set(opts.trustedProjects ?? [])].sort();
+  for (const projectPath of trusted) {
+    lines.push(`[projects.${tomlBasicString(projectPath)}]`);
+    lines.push(`trust_level = "trusted"`);
+    lines.push('');
+  }
 
   for (const [name, config] of Object.entries(servers)) {
     lines.push(`[mcp_servers.${name}]`);

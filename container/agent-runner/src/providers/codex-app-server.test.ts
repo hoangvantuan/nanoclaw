@@ -60,6 +60,35 @@ describe('Codex config TOML', () => {
     expect(content).toContain('[mcp_servers.nanoclaw.env]');
     expect(content).toContain('FOO = "bar"');
   });
+
+  it('writes a trusted project block per work subdir, deduped and sorted', () => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+    process.env.HOME = tmpHome;
+
+    writeCodexConfigToml(
+      {},
+      { trustedProjects: ['/workspace/agent/beta', '/workspace/agent/alpha', '/workspace/agent/beta'] },
+    );
+
+    const content = fs.readFileSync(path.join(tmpHome, '.codex', 'config.toml'), 'utf-8');
+    expect(content).toContain('[projects."/workspace/agent/alpha"]');
+    expect(content).toContain('[projects."/workspace/agent/beta"]');
+    expect(content).toContain('trust_level = "trusted"');
+    // deduped: only two blocks despite the duplicate input
+    expect(content.match(/trust_level = "trusted"/g)).toHaveLength(2);
+    // sorted: alpha before beta
+    expect(content.indexOf('/workspace/agent/alpha')).toBeLessThan(content.indexOf('/workspace/agent/beta'));
+  });
+
+  it('omits the projects section entirely when no trusted projects are given', () => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+    process.env.HOME = tmpHome;
+
+    writeCodexConfigToml({ nanoclaw: { command: 'bun', args: [] } });
+
+    const content = fs.readFileSync(path.join(tmpHome, '.codex', 'config.toml'), 'utf-8');
+    expect(content).not.toContain('[projects.');
+  });
 });
 
 describe('Codex auto-approval', () => {

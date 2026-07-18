@@ -3,7 +3,7 @@
  * Spawns agent containers with session folder + agent group folder mounts.
  * The container runs the v2 agent-runner which polls the session DB.
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, exec, execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
@@ -29,7 +29,9 @@ import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContaine
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { getMessagingGroupAgentByPair } from './db/messaging-groups.js';
 import { getDb, hasTable } from './db/connection.js';
+import { validateWorkSubdir } from './work-subdir.js';
 import { initGroupFilesystem } from './group-init.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
@@ -144,6 +146,14 @@ async function spawnContainer(session: Session): Promise<void> {
   const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
 
   const mounts = buildMounts(agentGroup, session, containerConfig, provider, contribution);
+
+  // Per-wiring working subdir (migration 020). Resolve from the session's
+  // wiring, provision it under the group dir (mkdir + git init), and thread it
+  // into the container env so the runner sets its cwd there. NULL for task/
+  // system sessions and un-subdir'd wirings → the shared group dir as before.
+  const workSubdir = resolveSessionWorkSubdir(session);
+  if (workSubdir) provisionWorkSubdir(path.resolve(GROUPS_DIR, agentGroup.folder), workSubdir);
+
   const containerName = `nanoclaw-v2-${agentGroup.folder}-${Date.now()}`;
   // OneCLI agent identifier is always the agent group id — stable across
   // sessions and reversible via getAgentGroup() for approval routing.
@@ -156,6 +166,7 @@ async function spawnContainer(session: Session): Promise<void> {
     provider,
     contribution,
     agentIdentifier,
+    workSubdir,
   );
 
   log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
@@ -243,6 +254,49 @@ export function resolveProviderName(
   containerConfigProvider: string | null | undefined,
 ): string {
   return (sessionProvider || containerConfigProvider || 'claude').toLowerCase();
+}
+
+/**
+ * Resolve the per-wiring working subdir for a session (migration 020).
+ * Returns the validated relative path, or null when the session has no
+ * messaging group (task/system sessions) or its wiring sets no subdir.
+ * Re-validates the stored value defensively — a hand-edited DB row must never
+ * point the container cwd outside the group dir.
+ */
+export function resolveSessionWorkSubdir(session: Session): string | null {
+  if (!session.messaging_group_id) return null;
+  const wiring = getMessagingGroupAgentByPair(session.messaging_group_id, session.agent_group_id);
+  const raw = wiring?.work_subdir?.trim();
+  if (!raw) return null;
+  try {
+    return validateWorkSubdir(raw);
+  } catch (err) {
+    log.warn('Ignoring invalid work_subdir on wiring — falling back to the shared group dir', {
+      sessionId: session.id,
+      raw,
+      err,
+    });
+    return null;
+  }
+}
+
+/**
+ * Provision a per-wiring working subdir under the group dir: create it, and
+ * `git init` it if it isn't already a repo. The git repo is required for
+ * Codex's project-scoped `.agents/skills` scan (it only runs when cwd is a git
+ * repo); it's harmless for the MCP-only case. Best-effort git — a missing
+ * binary logs and continues, since project MCP config works without it.
+ */
+function provisionWorkSubdir(groupDir: string, subdir: string): void {
+  const abs = path.join(groupDir, subdir);
+  fs.mkdirSync(abs, { recursive: true });
+  if (!fs.existsSync(path.join(abs, '.git'))) {
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: abs, stdio: 'ignore' });
+    } catch (err) {
+      log.warn('git init failed for work subdir — project-scoped skills will be unavailable there', { abs, err });
+    }
+  }
 }
 
 function resolveProviderContribution(
@@ -439,6 +493,7 @@ async function buildContainerArgs(
   _provider: string,
   providerContribution: ProviderContainerContribution,
   agentIdentifier?: string,
+  workSubdir?: string | null,
 ): Promise<string[]> {
   const args: string[] = ['run', '--rm', '--name', containerName, '--label', CONTAINER_INSTALL_LABEL];
 
@@ -452,6 +507,12 @@ async function buildContainerArgs(
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Per-wiring working subdir (migration 020) — per-session, so it rides the
+  // env rather than the shared container.json (which parallel same-group
+  // sessions overwrite). The runner joins it under /workspace/agent for its
+  // cwd; absent → the shared group dir.
+  if (workSubdir) args.push('-e', `NANOCLAW_WORK_SUBDIR=${workSubdir}`);
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {

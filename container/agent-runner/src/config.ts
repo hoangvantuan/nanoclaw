@@ -18,6 +18,13 @@ export interface RunnerConfig {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   model?: string;
   effort?: string;
+  /**
+   * Distinct per-wiring working subdirs across this agent group (migration
+   * 020), relative to the group dir. Providers with project-scoped config
+   * (Codex) trust these so their `.codex/config.toml` + `.agents/skills` are
+   * honored. Absent/empty when the group has no subdir'd wirings.
+   */
+  workSubdirs?: string[];
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -47,6 +54,7 @@ export function loadConfig(): RunnerConfig {
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
+    workSubdirs: Array.isArray(raw.workSubdirs) ? (raw.workSubdirs as string[]) : undefined,
   };
 
   return _config;

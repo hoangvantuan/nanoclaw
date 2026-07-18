@@ -171,6 +171,63 @@ describe('wirings — threads and priority columns', () => {
   });
 });
 
+describe('wirings — work_subdir column', () => {
+  it('omitted --work-subdir stores NULL (shared group dir)', async () => {
+    const row = await create({ messaging_group_id: 'mg-group', agent_group_id: 'ag-1' });
+    expect(getMessagingGroupAgent(row.id as string)!.work_subdir ?? null).toBeNull();
+  });
+
+  it('stores a normalized relative --work-subdir', async () => {
+    const row = await create({
+      messaging_group_id: 'mg-group',
+      agent_group_id: 'ag-1',
+      work_subdir: './projects//alpha/',
+    });
+    expect(getMessagingGroupAgent(row.id as string)!.work_subdir).toBe('projects/alpha');
+  });
+
+  it('rejects an absolute --work-subdir on create', async () => {
+    await expect(
+      create({ messaging_group_id: 'mg-group', agent_group_id: 'ag-1', work_subdir: '/etc' }),
+    ).rejects.toThrow(/relative/);
+  });
+
+  it('rejects a .. escape in --work-subdir on create', async () => {
+    await expect(
+      create({ messaging_group_id: 'mg-group', agent_group_id: 'ag-1', work_subdir: '../escape' }),
+    ).rejects.toThrow(/\.\./);
+  });
+
+  it('F1: rejects --work-subdir with session_mode=agent-shared on create', async () => {
+    await expect(
+      create({
+        messaging_group_id: 'mg-group',
+        agent_group_id: 'ag-1',
+        session_mode: 'agent-shared',
+        work_subdir: 'projects/alpha',
+      }),
+    ).rejects.toThrow(/agent-shared/);
+  });
+
+  it('update sets and clears work_subdir', async () => {
+    const row = await create({ messaging_group_id: 'mg-group', agent_group_id: 'ag-1' });
+    await update({ id: row.id, work_subdir: 'work/dir' });
+    expect(getMessagingGroupAgent(row.id as string)!.work_subdir).toBe('work/dir');
+    await update({ id: row.id, work_subdir: '' });
+    expect(getMessagingGroupAgent(row.id as string)!.work_subdir ?? null).toBeNull();
+  });
+
+  it('F1: update rejects flipping a subdir wiring to agent-shared', async () => {
+    const row = await create({ messaging_group_id: 'mg-group', agent_group_id: 'ag-1', work_subdir: 'projects/a' });
+    await expect(update({ id: row.id, session_mode: 'agent-shared' })).rejects.toThrow(/agent-shared/);
+  });
+
+  it('F1: update rejects setting a subdir on an agent-shared wiring', async () => {
+    const row = await create({ messaging_group_id: 'mg-group', agent_group_id: 'ag-1', session_mode: 'agent-shared' });
+    await expect(update({ id: row.id, work_subdir: 'projects/a' })).rejects.toThrow(/agent-shared/);
+  });
+});
+
 describe('wirings-update — same validation as create', () => {
   it('rejects switching to pattern mode when no engage_pattern exists', async () => {
     const row = await create({ messaging_group_id: 'mg-group', agent_group_id: 'ag-1' }); // sticky, no pattern

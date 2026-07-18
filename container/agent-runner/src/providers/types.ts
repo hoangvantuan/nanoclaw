@@ -76,6 +76,14 @@ export interface ProviderOptions {
    * through to the underlying SDK. If omitted, the SDK default is used.
    */
   effort?: string;
+  /**
+   * Absolute container paths of per-wiring working dirs in this group
+   * (migration 020). Providers that support project-scoped config (Codex) mark
+   * these `trusted` so their `.codex/config.toml` MCP servers and
+   * `.agents/skills` under those dirs are honored while global config is still
+   * inherited. Providers without a project-trust concept ignore this.
+   */
+  trustedWorkspaces?: string[];
 }
 
 export interface QueryInput {
