@@ -88,7 +88,9 @@ describe('validateWorkSubdir', () => {
 describe('migration 020 — work_subdir column', () => {
   it('is a nullable, default-free TEXT column', () => {
     const col = getDb()
-      .prepare(`SELECT type, "notnull", dflt_value FROM pragma_table_info('messaging_group_agents') WHERE name = 'work_subdir'`)
+      .prepare(
+        `SELECT type, "notnull", dflt_value FROM pragma_table_info('messaging_group_agents') WHERE name = 'work_subdir'`,
+      )
       .get() as { type: string; notnull: number; dflt_value: unknown } | undefined;
     expect(col).toBeDefined();
     expect(col!.type).toBe('TEXT');
@@ -103,8 +105,12 @@ describe('ncl wirings --work-subdir', () => {
     expect(getMessagingGroupAgent(row.id as string)!.work_subdir).toBe('projects/alpha');
   });
   it('rejects absolute / .. on create', async () => {
-    await expect(create({ messaging_group_id: 'mg-1', agent_group_id: 'ag-1', work_subdir: '/etc' })).rejects.toThrow(/relative/);
-    await expect(create({ messaging_group_id: 'mg-2', agent_group_id: 'ag-1', work_subdir: '../x' })).rejects.toThrow(/\.\./);
+    await expect(create({ messaging_group_id: 'mg-1', agent_group_id: 'ag-1', work_subdir: '/etc' })).rejects.toThrow(
+      /relative/,
+    );
+    await expect(create({ messaging_group_id: 'mg-2', agent_group_id: 'ag-1', work_subdir: '../x' })).rejects.toThrow(
+      /\.\./,
+    );
   });
   it('F1: rejects --work-subdir with session_mode=agent-shared on create', async () => {
     await expect(
