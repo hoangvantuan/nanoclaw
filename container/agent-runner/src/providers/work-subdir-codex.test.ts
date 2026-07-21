@@ -14,6 +14,14 @@ import path from 'path';
 
 import { writeCodexConfigToml } from './codex-app-server.js';
 
+// writeCodexConfigToml now takes the memory session hook as its second arg
+// (upstream memory feature); the trusted-projects opt moved to the third arg.
+const MEMORY_SESSION_HOOK = {
+  command: 'bun /app/src/memory/hook.ts',
+  legacyCommands: ['bun /app/src/memory-hook.ts'],
+  sources: ['startup', 'clear', 'compact'],
+} as const;
+
 let tmpHome: string | null = null;
 const originalHome = process.env.HOME;
 
@@ -30,10 +38,9 @@ describe('writeCodexConfigToml — work_subdir trust block', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
     process.env.HOME = tmpHome;
 
-    writeCodexConfigToml(
-      {},
-      { trustedProjects: ['/workspace/agent/beta', '/workspace/agent/alpha', '/workspace/agent/beta'] },
-    );
+    writeCodexConfigToml({}, MEMORY_SESSION_HOOK, {
+      trustedProjects: ['/workspace/agent/beta', '/workspace/agent/alpha', '/workspace/agent/beta'],
+    });
 
     const content = fs.readFileSync(path.join(tmpHome, '.codex', 'config.toml'), 'utf-8');
     expect(content).toContain('[projects."/workspace/agent/alpha"]');
@@ -47,7 +54,7 @@ describe('writeCodexConfigToml — work_subdir trust block', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
     process.env.HOME = tmpHome;
 
-    writeCodexConfigToml({ nanoclaw: { command: 'bun', args: [] } });
+    writeCodexConfigToml({ nanoclaw: { command: 'bun', args: [] } }, MEMORY_SESSION_HOOK);
 
     const content = fs.readFileSync(path.join(tmpHome, '.codex', 'config.toml'), 'utf-8');
     expect(content).not.toContain('[projects.');

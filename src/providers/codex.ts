@@ -21,10 +21,10 @@
  * placeholder. Model/effort come from container_config (`ncl groups config
  * update --model/--effort`), not env.
  *
- * Memory and exchange archiving are NOT handled here either — the
- * container-side provider declares `usesMemoryScaffold` (the runner
- * scaffolds the memory tree) and implements `onExchangeComplete` (the
- * provider's own exchange-archive.ts persists each exchange).
+ * Memory and exchange archiving are NOT handled here either. The shared
+ * runner scaffolds memory, while the container-side provider registers its
+ * native SessionStart hook and persists exchanges through
+ * `onExchangeComplete`.
  */
 import fs from 'fs';
 import path from 'path';

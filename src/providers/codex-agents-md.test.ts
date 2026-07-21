@@ -60,29 +60,30 @@ describe('composeGroupAgentsMd cap handling', () => {
       // codex-discovered (~/.codex/skills). /workspace/agent/skills is not
       // scanned by codex, so authored skills there never trigger.
       expect(doc).toContain('~/.codex/skills');
+      expect(doc).toContain('linked memory files');
+      expect(doc).not.toContain('memories, data');
       expect(Buffer.byteLength(doc, 'utf-8')).toBeLessThanOrEqual(CODEX_PROJECT_DOC_MAX_BYTES);
     } finally {
       fs.rmSync(groupDir, { recursive: true, force: true });
     }
   });
 
-  it('inlines the memory index so recall does not depend on a file read', () => {
+  it('never reads or inlines the host memory index', () => {
     const g = group('with-memory');
     createAgentGroup(g);
     ensureContainerConfig(g.id);
     const groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-md-'));
     try {
+      const sentinel = path.join(TEST_ROOT, 'host-secret');
+      fs.writeFileSync(sentinel, 'must not enter AGENTS.md\n');
       fs.mkdirSync(path.join(groupDir, 'memory'), { recursive: true });
-      fs.writeFileSync(
-        path.join(groupDir, 'memory', 'index.md'),
-        '# Memory Index\n- [People](memories/people/) - notes about people and their preferences\n',
-      );
+      fs.symlinkSync(sentinel, path.join(groupDir, 'memory', 'index.md'));
 
       composeGroupAgentsMd(g, groupDir);
 
       const doc = fs.readFileSync(path.join(groupDir, 'AGENTS.md'), 'utf-8');
-      expect(doc).toContain('Current memory index');
-      expect(doc).toContain('notes about people and their preferences');
+      expect(doc).toContain('supplied by NanoClaw at session startup');
+      expect(doc).not.toContain('must not enter AGENTS.md');
     } finally {
       fs.rmSync(groupDir, { recursive: true, force: true });
     }
