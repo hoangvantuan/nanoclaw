@@ -110,7 +110,7 @@ ncl help
 | roles | list, grant, revoke | Owner / admin privileges (global or scoped to an agent group) |
 | members | list, add, remove | Unprivileged access gate for an agent group |
 | destinations | list, add, remove | Where an agent group can send messages |
-| sessions | list, get | Active sessions (read-only) |
+| sessions | list, get, close | Active sessions. `close` retires one (kills its container, `status='closed'`) so the next message in that chat/thread builds a fresh session from the current wiring; no `delete` — FKs from `pending_questions` / `pending_approvals` make a row delete unsafe |
 | tasks | list, get, create, update, cancel, pause, resume, delete, run, append-log | Scheduled tasks for an agent group |
 | user-dms | list | Cold-DM cache (read-only) |
 | dropped-messages | list | Messages from unregistered senders (read-only) |

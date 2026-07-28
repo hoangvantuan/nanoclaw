@@ -1,3 +1,4 @@
+import { closeSessionOperation } from '../../session-close.js';
 import { registerResource } from '../crud.js';
 
 registerResource({
@@ -42,5 +43,15 @@ registerResource({
     { name: 'last_active', type: 'string', description: 'Last message or heartbeat. Used for stale detection.' },
     { name: 'created_at', type: 'string', description: 'Auto-set.', generated: true },
   ],
+  // No generic `delete`: two central-DB tables carry an FK to sessions(id)
+  // (pending_questions.session_id NOT NULL, pending_approvals.session_id) and
+  // the connection runs `foreign_keys = ON`, so a single-table DELETE fails the
+  // moment a card is outstanding. `close` is the architecture's own retirement
+  // mechanism — `status = 'closed'` is already in the column's enum, every
+  // session lookup filters `status = 'active'`, and host-sweep uses exactly
+  // this transition to GC spent task sessions.
   operations: { list: 'open', get: 'open' },
+  // Reach-in owned by the `work-subdir` skill: the operation body lives in
+  // src/session-close.ts so this file keeps a two-line integration point.
+  customOperations: { close: closeSessionOperation },
 });

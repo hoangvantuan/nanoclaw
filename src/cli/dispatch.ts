@@ -89,10 +89,15 @@ export async function dispatch(
       }
       req = { ...req, args: { ...req.args, ...fill } };
 
-      // Fail-closed pre-handler check for sessions-get: returns "not found"
-      // regardless of whether the UUID exists in another group, preventing an
-      // existence oracle across group boundaries.
-      if (cmd.resource === 'sessions' && req.command === 'sessions-get' && req.args.id) {
+      // Fail-closed pre-handler check for any sessions verb that names a
+      // session by --id (get, close, …): returns "not found" regardless of
+      // whether the UUID exists in another group, preventing an existence
+      // oracle across group boundaries. `--id` on sessions is a session id,
+      // not the agent group id, so the auto-fill above can't pin it and the
+      // guard's cross-group arg check doesn't cover it — without this a
+      // group-scoped agent could name another group's session (and, for
+      // approval-gated verbs, mint a card for it).
+      if (cmd.resource === 'sessions' && req.args.id) {
         const s = getSession(req.args.id as string);
         if (!s || s.agent_group_id !== ctx.agentGroupId) {
           return err(req.id, 'handler-error', `session not found: ${req.args.id}`);
