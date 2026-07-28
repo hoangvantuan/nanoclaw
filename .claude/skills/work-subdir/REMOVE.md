@@ -10,6 +10,8 @@ rm -f src/work-subdir.ts \
       src/work-subdir-cli.test.ts \
       src/modules/permissions/work-subdir-approval.ts \
       src/modules/permissions/work-subdir-approval.test.ts \
+      src/session-close.ts \
+      src/session-close.test.ts \
       container/agent-runner/src/providers/work-subdir-codex.test.ts
 ```
 
@@ -97,15 +99,33 @@ In `src/modules/permissions/channel-approval.test.ts`, delete the `chooseSharedW
 - `container/agent-runner/src/providers/codex-app-server.ts` — remove `trustedProjects` from `writeCodexConfigToml`'s opts and delete the trusted-project block loop.
 - `container/agent-runner/src/providers/codex.ts` — remove the `trustedProjects` field and the `trustedProjects:` argument in the `writeCodexConfigToml(...)` call.
 
-## 8. Rebuild and restart
+## 8. Revert `ncl sessions close`
+
+- `src/cli/resources/sessions.ts` — remove the `import { closeSessionOperation } from '../../session-close.js';` line and the whole `customOperations: { close: closeSessionOperation },` entry together with its two-line comment. `operations: { list: 'open', get: 'open' },` is the original last property; leave it and the `delete`-rationale comment above it in place.
+- `src/cli/dispatch.ts` — narrow the sessions pre-check back to `sessions-get` only and restore its original three-line comment:
+
+```ts
+      // Fail-closed pre-handler check for sessions-get: returns "not found"
+      // regardless of whether the UUID exists in another group, preventing an
+      // existence oracle across group boundaries.
+      if (cmd.resource === 'sessions' && req.command === 'sessions-get' && req.args.id) {
+```
+
+- `CLAUDE.md` — restore the Admin CLI table's `sessions` row to `| sessions | list, get | Active sessions (read-only) |`.
+
+Any session already set to `status='closed'` stays closed — that is a normal state the host produces on its own (host-sweep retires spent task sessions the same way), so there is nothing to undo in the DB.
+
+## 9. Rebuild and restart
 
 ```bash
-export PATH="/Users/tuanhv/.nvm/versions/node/v22.22.1/bin:$PATH"
 pnpm run build && ./container/build.sh
 # macOS: launchctl kickstart -k gui/$(id -u)/com.nanoclaw
-# Linux: systemctl --user restart nanoclaw
+# Linux: systemctl --user restart "$(systemctl --user list-units --type=service --all --no-legend \
+#          | grep -oE 'nanoclaw[^ ]*\.service' | head -1)"
 ```
+
+If `better-sqlite3` fails to load, put the repo's pinned Node 22 first on `PATH`.
 
 ## Verification
 
-`ncl wirings help` no longer lists `--work-subdir`; `pnpm run build` and `cd container/agent-runner && bun run typecheck` are clean; no `work-subdir` source or test files remain in `src/` or `container/agent-runner/src/`.
+`ncl wirings help` no longer lists `--work-subdir` and `ncl sessions help` no longer lists `close`; `pnpm run build` and `cd container/agent-runner && bun run typecheck` are clean; no `work-subdir` or `session-close` source or test files remain in `src/` or `container/agent-runner/src/`.

@@ -1,6 +1,6 @@
 ---
 name: work-subdir
-description: "Per-wiring working subfolder for NanoClaw. Give one channel/group its own isolated working directory (own files, git repo, project-scoped Codex MCP/skills) under the agent group dir, while still inheriting the group's global MCP/skill config. Install/reapply this skill to add the `--work-subdir` flag on `ncl wirings` and ask for a subfolder in the unknown-channel DM approval flow. Use when someone wants a channel to 'work in its own folder', a 'separate project dir per wiring', per-project MCP servers that don't leak to other chats, or asks about the `work_subdir` column."
+description: "Per-wiring working subfolder for NanoClaw. Give one channel/group its own isolated working directory (own files, git repo, project-scoped Codex MCP/skills) under the agent group dir, while still inheriting the group's global MCP/skill config. Install/reapply this skill to add the `--work-subdir` flag on `ncl wirings`, ask for a subfolder in the unknown-channel DM approval flow, and add `ncl sessions close <id>` to retire a session still running the old subfolder. Use when someone wants a channel to 'work in its own folder', a 'separate project dir per wiring', per-project MCP servers that don't leak to other chats, asks about the `work_subdir` column, or has a live container stuck on a stale `NANOCLAW_WORK_SUBDIR` after a wiring change."
 ---
 
 # Add per-wiring working subfolder (`work_subdir`)
@@ -11,7 +11,7 @@ Runs a wiring's container with cwd at `/workspace/agent/<work_subdir>` instead o
 
 ## Phase 1: Pre-flight
 
-Treat the skill as fully applied only when all four markers exist: `src/work-subdir.ts`, `src/modules/permissions/work-subdir-approval.ts`, `src/modules/permissions/index.ts` contains `promptForWorkSubdir`, and `ncl wirings help` lists `--work-subdir`. If any marker is missing, continue through Phase 2. Otherwise skip to Phase 4 (Verify) unless reapplying after an upstream update. Reapply is safe: each instruction below checks for the desired state and adds or replaces it exactly once.
+Treat the skill as fully applied only when all six markers exist: `src/work-subdir.ts`, `src/modules/permissions/work-subdir-approval.ts`, `src/session-close.ts`, `src/modules/permissions/index.ts` contains `promptForWorkSubdir`, `ncl wirings help` lists `--work-subdir`, and `ncl sessions help` lists `close`. If any marker is missing, continue through Phase 2. Otherwise skip to Phase 4 (Verify) unless reapplying after an upstream update. Reapply is safe: each instruction below checks for the desired state and adds or replaces it exactly once.
 
 ## Phase 2: Apply code changes
 
@@ -25,6 +25,8 @@ cp "$S/020-wiring-work-subdir.ts"   src/db/migrations/020-wiring-work-subdir.ts
 cp "$S/work-subdir-cli.test.ts"     src/work-subdir-cli.test.ts
 cp "$S/work-subdir-approval.ts"      src/modules/permissions/work-subdir-approval.ts
 cp "$S/work-subdir-approval.test.ts" src/modules/permissions/work-subdir-approval.test.ts
+cp "$S/session-close.ts"             src/session-close.ts
+cp "$S/session-close.test.ts"        src/session-close.test.ts
 # Container (Bun) tree
 cp "$S/work-subdir-codex.test.ts"   container/agent-runner/src/providers/work-subdir-codex.test.ts
 ```
@@ -332,20 +334,54 @@ Move wiring creation, optional `setWiringWorkSubdir`, sender admission, and pend
 
 `work-subdir-approval.test.ts` drives the real response handler and router interceptor. It guards both prompt call sites, deferred wiring, the always-available recovery chooser, same-approver prompt serialization and stale-prompt cleanup, shared-folder choices, invalid-path retry, new-agent flow, atomic rollback/retry, and persistence before the first container wake.
 
-### 2j. Validate
+### 2j. `ncl sessions close` — retire a session running the old subfolder
+
+`work_subdir` is resolved from the wiring at **every** spawn and never stored on the session, so changing it moves the container only on its next spawn. A container that was already up keeps its baked-in `NANOCLAW_WORK_SUBDIR` for as long as it lives. `close` retires the session so the next message builds a fresh one against the current wiring. `session-close.ts` (copied in 2a) owns the whole operation; keep the reach-ins tiny.
+
+1. `src/cli/resources/sessions.ts` — ensure the import and the one-line `customOperations` exist exactly once. If the file already has a `customOperations` block, merge `close` into it rather than adding a second key:
+
+```ts
+import { closeSessionOperation } from '../../session-close.js';
+```
+```ts
+  operations: { list: 'open', get: 'open' },
+  // Reach-in owned by the `work-subdir` skill: the operation body lives in
+  // src/session-close.ts so this file keeps a two-line integration point.
+  customOperations: { close: closeSessionOperation },
+```
+
+Leave `operations` without a generic `delete`: `pending_questions.session_id` (NOT NULL) and `pending_approvals.session_id` carry an FK to `sessions(id)` and the connection runs `foreign_keys = ON`, so a single-table DELETE fails the moment a card is outstanding.
+
+2. `src/cli/dispatch.ts` — widen the existing fail-closed sessions pre-check from `sessions-get` only to **every** sessions verb carrying `--id`. Without this a `cli_scope: group` agent can name another group's session: `--id` on sessions is a *session* id, so the group-scope auto-fill can't pin it and the guard's cross-group arg check doesn't cover it. Change the condition to:
+
+```ts
+      if (cmd.resource === 'sessions' && req.args.id) {
+```
+
+and update the comment above it to say it covers any sessions verb that names a session by `--id` (get, close, …). Idempotent: if the condition is already the widened form, leave it.
+
+3. `CLAUDE.md` — the Admin CLI table's `sessions` row should read `list, get, close` and note that `close` retires a session (kills its container, `status='closed'`) so the next message builds a fresh session, and that there is no `delete` because of the FKs.
+
+`session-close.test.ts` guards both reach-ins and the regression this exists for: wiring points at A → session runs → wiring moves to B → close → the next resolve creates a **new** session that resolves B. It also pins that the closed row, the messaging group, the wiring, sibling sessions, and the FK-bearing rows all survive (a hard DELETE could not have left them intact).
+
+### 2k. Validate
 
 ```bash
-export PATH="/Users/tuanhv/.nvm/versions/node/v22.22.1/bin:$PATH"   # repo pins Node 22; the machine default breaks better-sqlite3
 pnpm run build
-pnpm exec vitest run src/work-subdir-cli.test.ts src/modules/permissions/work-subdir-approval.test.ts src/modules/permissions/channel-approval.test.ts
-(export PATH="/Users/tuanhv/.bun/bin:$PATH"; cd container/agent-runner && bun run typecheck && bun test src/providers/work-subdir-codex.test.ts)
+pnpm exec vitest run src/work-subdir-cli.test.ts src/session-close.test.ts src/modules/permissions/work-subdir-approval.test.ts src/modules/permissions/channel-approval.test.ts
+(cd container/agent-runner && bun run typecheck && bun test src/providers/work-subdir-codex.test.ts)
 ```
+
+If `better-sqlite3` fails to load, the shell is on the wrong Node — the repo pins Node 22; put the pinned toolchain first on `PATH` (`export PATH="$HOME/.nvm/versions/node/v22.*/bin:$PATH"`, and `$HOME/.bun/bin` for the Bun leg).
 
 All must be clean. Then rebuild the container image so sessions pick up the runner changes:
 
 ```bash
 ./container/build.sh
-# restart the host — macOS: launchctl kickstart -k gui/$(id -u)/com.nanoclaw ; Linux: systemctl --user restart nanoclaw
+# Restart the host so the ncl socket server registers `sessions close`.
+# macOS:  launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+# Linux:  systemctl --user restart "$(systemctl --user list-units --type=service --all --no-legend \
+#           | grep -oE 'nanoclaw[^ ]*\.service' | head -1)"
 ```
 
 ## Phase 3: Use it
@@ -360,9 +396,19 @@ Constraints (enforced at the CLI and re-checked at spawn): relative only (no lea
 
 Unknown-channel approval asks in the approver's DM before it creates the wiring. Reply with a relative path, or `no`, `skip`, `shared`, `không`, `khong`, `n`, or an empty message to use the shared group directory. Invalid paths keep the prompt armed so the next DM can retry.
 
+Changing the subfolder on a wiring whose container is **already running** does not move that container — it keeps the `NANOCLAW_WORK_SUBDIR` it booted with. Retire the session so the next message builds a fresh one:
+
+```bash
+ncl sessions list --agent-group-id <ag> --status active   # find the session for that chat/thread
+ncl sessions close <session-id>
+```
+
+Approval-gated for agent callers (a `cli_command` card); allowed directly on the host. Idempotent, and it reports how much work the close abandons (due-but-unprocessed inbound, undelivered outbound). It preserves the session row, both session DBs, the messaging group, the wiring, sibling sessions, and the group's conversation transcripts. To keep the session and only restart the container, use `ncl groups restart` instead.
+
 ## Phase 4: Verify
 
 - `ncl wirings help` lists `--work-subdir`; `ncl wirings get --id <id>` shows the stored `work_subdir`.
+- `ncl sessions help` lists `close`; closing an id that does not exist returns `session not found`, and closing the same id twice succeeds with `already_closed`.
 - Wire a test channel with `--work-subdir projects/test`, send it a message, and confirm the agent's files land in `groups/<folder>/projects/test/` and `send_file` with a relative path resolves there.
 - For Codex project-scoped MCP: drop a `.codex/config.toml` with an extra MCP server inside the subfolder and confirm `codex mcp list` (cwd = the subfolder) shows both it and the global servers.
 
@@ -381,6 +427,7 @@ Unknown-channel approval asks in the approver's DM before it creates the wiring.
 | Runner cwd | agent-runner `index.ts` | cwd = `/workspace/agent/<subdir>`, publishes `NANOCLAW_AGENT_CWD` |
 | send_file (F3) | `mcp-tools/core.ts` | resolve relative paths against the cwd |
 | Codex trust (B) | `providers/codex-app-server.ts` + `codex.ts` + `types.ts` | `trusted` block per union subdir |
+| Retire a stale session | `session-close.ts` + `cli/resources/sessions.ts` + `cli/dispatch.ts` | `ncl sessions close` — `status='closed'` + container kill so the next message re-resolves the wiring |
 
 ## Gotchas
 
@@ -388,6 +435,12 @@ Unknown-channel approval asks in the approver's DM before it creates the wiring.
 - **MCP vs skills.** Project MCP needs only the trust block; project *skills* also need the subfolder to be a git repo (hence `git init` in `provisionWorkSubdir`). Global skills go through `$HOME/.agents/skills` and are always inherited.
 - **self-mod writes global.** `add_mcp_server` / `install_packages` change the group's `container.json` (whole group). Per-subfolder MCP is the agent writing `.codex/config.toml` inside the subfolder, not self-mod.
 - **Two env vars, one concept.** `NANOCLAW_WORK_SUBDIR` (host→runner, relative) becomes `NANOCLAW_AGENT_CWD` (runner→MCP, absolute). Keep them consistent.
+- **A running container never notices a wiring change.** The subdir is resolved at spawn and handed over as an env var read once at boot, so the DB is already correct while the live container is still in the old folder. `ncl wirings get` showing the new value proves nothing about where the agent is standing — check `docker inspect <container> --format '{{.Config.Env}}'`, and fix it with `ncl sessions close`, not by re-editing the wiring.
+- **`close`, never `DELETE FROM sessions`.** `pending_questions.session_id` (NOT NULL) and `pending_approvals.session_id` are FKs into `sessions(id)` with `foreign_keys = ON`. A hand-rolled row delete fails the moment a card is outstanding, and it would take the chat's history with it. `status='closed'` is the sanctioned retirement — every session lookup filters `status='active'`.
+- **`--id` on `sessions` is a session id, not a group id.** That is why the `dispatch.ts` pre-check has to cover every sessions verb: the `cli_scope: group` auto-fill and the guard's cross-group arg check both key on the agent group id, so without the widened check a scoped agent could name (and mint an approval card for) another group's session.
+- **The host must be restarted for a new `ncl` verb to exist.** `ncl` talks to the running host over `data/ncl.sock`; the process holds the old `dist/`. A fresh `pnpm run build` alone leaves `ncl sessions close` returning unknown-command.
+- **The service unit is slug-scoped.** It is `nanoclaw-v2-<install-slug>.service`, not `nanoclaw.service` — `systemctl --user restart nanoclaw` fails with "Unit could not be found". Find it with `systemctl --user list-units --all | grep -i nanoclaw`, or read the cgroup of the live process (`cat /proc/<pid>/cgroup`).
+- **Restarting the host reaps orphan containers.** So a `close` run right after a restart legitimately reports `container: was not running` — the kill already happened. Confirm with `docker ps` rather than assuming the close missed.
 - **DM capture is in memory.** A host restart while waiting loses the next-message arming, but the durable pending approval row and original card remain. For an existing target, click its connect option again. If a new agent was already created, choose that agent through **Choose existing**; clicking **Connect new agent** creates another agent. No wiring or replay happens before a valid reply.
 - **Next-DM prompts are sequential.** A second work-subfolder prompt for the same approver is refused until the first completes. Agent naming and reject-with-reason still use the router's existing ordered interceptor pattern, so finish those prompts before opening a different prompt type for the same approver.
 - Repo rules still apply: ISO-UTC timestamps, `minimumReleaseAge` for pnpm, `bun install` (not pnpm) for agent-runner deps.
@@ -399,6 +452,7 @@ Unknown-channel approval asks in the approver's DM before it creates the wiring.
 | `--work-subdir` rejected | agent-shared or bad path | not `session_mode=agent-shared`; relative, no `..` |
 | Project MCP not loaded | missing trust or old Codex | `config.toml` has `[projects."<abs>"] trust_level="trusted"`; Codex ≥ 0.144.5 |
 | Project skills not found | subfolder not a git repo | `.git` exists in the subfolder |
-| Agent still in `/workspace/agent` | no subdir or not respawned | `ncl wirings get` shows `work_subdir`; wiring spawned a fresh container since the change |
+| Agent still in `/workspace/agent` (or the *old* subfolder) | no subdir, or the container predates the change | `ncl wirings get` shows `work_subdir`; then `docker inspect <container> --format '{{.Config.Env}}' \| tr ' ' '\n' \| grep WORK_SUBDIR` — if it is stale, `ncl sessions close <session-id>` and send one message |
+| `ncl sessions close` → unknown command | host still running the pre-apply `dist/` | `pnpm run build`, then restart `nanoclaw-v2-<slug>.service`; `ncl sessions help` must list `close` |
 | `send_file` can't find a just-made file | stale image | rebuilt `container/agent-runner/` (`./container/build.sh`) + restarted host |
 | Subfolder reply is ignored after a restart | in-memory DM capture was lost | click connect again; for an already-created agent, use **Choose existing** and select it before replying |
